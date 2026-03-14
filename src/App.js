@@ -3813,8 +3813,7 @@ function RosterEditor({roster,setRoster,token}) {
   const hasLocalEdits = localRoster.some(r => r.name !== "");
   useEffect(() => {
     if (!hasLocalEdits) setLocal(buildLocal(roster));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roster]);
+  }, [roster]); // eslint-disable-line
 
   const updateName = (role, name) => {
     setLocal(prev => prev.map(r => r.role === role ? { ...r, name } : r));
