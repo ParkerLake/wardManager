@@ -6,7 +6,8 @@ import { Plus, X, LayoutList, Columns2, GripVertical, Printer, Save,
   ChevronLeft, ChevronRight, MessageSquare,
   Landmark, ExternalLink, RotateCcw, Settings2,
   Check, Info, AlertTriangle, XCircle,
-  ArrowDown, ArrowUp, LogOut } from "lucide-react";
+  ArrowDown, ArrowUp, LogOut, Menu, Home,
+  Users, ClipboardCheck, Link2 } from "lucide-react";
 import { useAuth } from "./useAuth";
 import { pullAll, pushAll, pullSacrament, pushSacrament, testConnection } from "./sheets";
 import config from "./config";
@@ -42,7 +43,7 @@ function nameInitials(name) {
   return (parts[0][0] + parts[parts.length-1][0]).toUpperCase();
 }
 const PURPOSE_OPTIONS  = ["Annual Youth","Semi-Annual Youth","Calling","Temple Recommend","Mission","Patriarchal Blessing","Ecclesiastical Endorsement","Follow Up","General","Releasing","Set Apart"];
-const AUTO_PULL_MS = 60000;
+const AUTO_PULL_MS = 5 * 60 * 1000; // 5 minutes — stays well under Sheets API quota
 const AUTO_PUSH_MS = 10000;
 
 // ─── Church Style Guide §2.5 Palette ─────────────────────────────────────────
@@ -154,7 +155,7 @@ label{font-family:'Helvetica Neue',Arial,sans-serif;font-size:10px;font-weight:7
 .kanban-card[draggable="true"]{user-select:none;}
 .modal-overlay{position:fixed;inset:0;background:rgba(0,48,87,.45);
   backdrop-filter:blur(6px);z-index:200;
-  display:flex;align-items:center;justify-content:center;padding:20px;}
+  display:flex;align-items:center;justify-content:center;padding:12px;}
 .modal{background:#fff;border-radius:16px;width:100%;max-width:560px;
   overflow:hidden;box-shadow:0 24px 64px rgba(0,48,87,.18);}
 .modal-lg{max-width:760px;}
@@ -163,7 +164,7 @@ label{font-family:'Helvetica Neue',Arial,sans-serif;font-size:10px;font-weight:7
   background:linear-gradient(240deg,rgba(255,255,255,.13) 0%,transparent 55%);pointer-events:none;}
 .modal-hd::after{content:'';position:absolute;top:25%;right:10%;width:45%;height:130%;
   background:linear-gradient(240deg,rgba(255,255,255,.06) 0%,transparent 60%);pointer-events:none;}
-.modal-body{padding:24px 28px 28px;max-height:70vh;overflow-y:auto;}
+.modal-body{padding:20px 20px 24px;max-height:80vh;overflow-y:auto;}
 .wm-table{width:100%;border-collapse:collapse;}
 .wm-table thead th{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
   color:#878A8C;padding:10px 16px;text-align:left;border-bottom:2px solid #D5CFBE;
@@ -202,7 +203,38 @@ tr.row-done td{opacity:.45;}
 .agenda-item:hover{border-color:#D5CFBE;}
 .agenda-item.done{opacity:.5;}
 .agenda-item-drag{cursor:grab;}
+/* Bottom tab bar */
+.bottom-tab-bar{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1.5px solid #D5CFBE;
+  display:flex;z-index:100;padding-bottom:env(safe-area-inset-bottom, 0px);}
+.bottom-tab-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:3px;padding:8px 4px;border:none;background:none;cursor:pointer;
+  font-family:'Helvetica Neue',Arial,sans-serif;font-size:10px;font-weight:500;
+  color:#878A8C;letter-spacing:.02em;transition:color .15s;min-height:56px;}
+.bottom-tab-item.active{color:#005581;font-weight:700;}
+.bottom-tab-item svg{transition:transform .15s;}
+.bottom-tab-item.active svg{transform:translateY(-1px);}
 `;
+
+// ─── useWindowWidth ──────────────────────────────────────────────────────────────
+function useWindowWidth() {
+  const [width, setWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const handler = () => setWidth(window.innerWidth);
+    window.addEventListener('resize', handler);
+    window.addEventListener('orientationchange', handler);
+    // Also handle DevTools device simulation which changes screen.width
+    const mo = window.matchMedia('(max-width: 639px)');
+    const mHandler = (e) => setWidth(e.matches ? 400 : window.innerWidth);
+    mo.addEventListener('change', mHandler);
+    return () => {
+      window.removeEventListener('resize', handler);
+      window.removeEventListener('orientationchange', handler);
+      mo.removeEventListener('change', mHandler);
+    };
+  }, []);
+  return width;
+}
+// Breakpoints: mobile < 640, tablet 640–1024, desktop > 1024
 
 // ─── Toast System ─────────────────────────────────────────────────────────────
 let _toastSet = null;
@@ -243,8 +275,10 @@ function ToastStack() {
 
 // ─── Shared UI Primitives ─────────────────────────────────────────────────────
 function HeroBanner({ title, sub, children }) {
+  const w = useWindowWidth();
+  const mob = w < 640;
   return (
-    <div style={{background:`linear-gradient(130deg,${C.blue40} 0%,${C.blue35} 50%,${C.blue25} 100%)`,borderRadius:14,padding:"20px 26px 18px",marginBottom:22,position:"relative",overflow:"hidden"}}>
+    <div style={{background:`linear-gradient(130deg,${C.blue40} 0%,${C.blue35} 50%,${C.blue25} 100%)`,borderRadius:mob?10:14,padding:mob?"14px 16px 12px":"20px 26px 18px",marginBottom:22,position:"relative",overflow:"hidden"}}>
       <div style={{position:"absolute",inset:0,pointerEvents:"none"}}>
         <div style={{position:"absolute",top:0,right:0,width:"60%",height:"100%",background:"linear-gradient(250deg,rgba(255,255,255,.13) 0%,transparent 50%)"}}/>
         <div style={{position:"absolute",top:"30%",right:"-5%",width:"50%",height:"130%",background:"linear-gradient(250deg,rgba(255,255,255,.07) 0%,transparent 55%)"}}/>
@@ -512,6 +546,9 @@ function LoginScreen({ onSignIn, error, loading }) {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 function MainApp({ user, token, onSignOut }) {
+  const windowWidth = useWindowWidth();
+  const isMobile  = windowWidth < 640;
+  const isTablet  = windowWidth >= 640 && windowWidth < 1024;
   const [tab,setTab]               = useState("appointments");
   const [appointments,setAppts]    = useState([]);
   const [callings,setCallings]     = useState([]);
@@ -581,39 +618,56 @@ function MainApp({ user, token, onSignOut }) {
     if(!silent) setSyncStatus("pulling");
     try {
       if(isAdminRef.current) {
-        // ── Admin: pull everything from the Bishopric sheet ──
-        const d = await pullAll(tokenRef.current);
-        setAppts(d.appointments); setCallings(d.callings);
-        setReleasings(d.releasings); setBishopricMeeting(d.bishopricMeeting||[]);
-        if(d.members) setMembers(d.members);
-        if(d.roster) setRoster(d.roster);
-        // Sacrament (non-blocking)
-        try {
-          const sp = await pullSacrament(tokenRef.current);
-          if(sp.sacramentProgram){ setSacrament(sp.sacramentProgram); sacrRef.current=sp.sacramentProgram; }
-        } catch(e) { /* sacrament sheet not yet configured */ }
+        // ── Admin: pull Bishopric sheet ──
+        // On silent background pulls, skip Members/Roster/Sacrament to save quota
+        if(silent) {
+          // Lightweight: only appointments/callings/releasings (3 calls)
+          const { sheetsLightPull } = await import("./sheets");
+          const d = await sheetsLightPull(tokenRef.current);
+          setAppts(d.appointments); setCallings(d.callings); setReleasings(d.releasings);
+        } else {
+          const d = await pullAll(tokenRef.current);
+          setAppts(d.appointments); setCallings(d.callings);
+          setReleasings(d.releasings); setBishopricMeeting(d.bishopricMeeting||[]);
+          if(d.members) setMembers(d.members);
+          if(d.roster) setRoster(d.roster);
+          // Sacrament (non-blocking)
+          try {
+            const sp = await pullSacrament(tokenRef.current);
+            if(sp.sacramentProgram){ setSacrament(sp.sacramentProgram); sacrRef.current=sp.sacramentProgram; }
+          } catch(e) { /* sacrament sheet not yet configured */ }
+        }
       }
       // ── Both roles: pull Ward Council sheet, Calendar, and Roster ──
       try {
         const { pullCalendar, pullWardCouncilMeeting, pullRosterFromWardCouncil } = await import("./sheets");
-        const [cp, wc, ros] = await Promise.all([
-          pullCalendar(tokenRef.current),
-          pullWardCouncilMeeting(tokenRef.current),
-          pullRosterFromWardCouncil(tokenRef.current),
-        ]);
-        if(cp.calendar){ setCalendar(cp.calendar); calendarRef.current=cp.calendar; }
-        if(wc.wardCouncilMeeting){ setWardCouncilMeeting(wc.wardCouncilMeeting); wcmRef.current=wc.wardCouncilMeeting; }
-        if(ros.roster?.length){ setRoster(ros.roster); rosterRef.current=ros.roster; }
-        // Pull links for both sheets
-        try {
-          const { pullBishopricLinks, pullWardCouncilLinks } = await import("./sheets");
-          if(isAdminRef.current) {
-            const bl = await pullBishopricLinks(tokenRef.current);
-            if(bl.links) setBishopricLinks(bl.links);
+        if(silent) {
+          // Background: skip Calendar/WCM/Links — handled by useMeetingSync polls or manual pull
+          // Only pull WCM for ward council users (admins use useMeetingSync)
+          if(!isAdminRef.current) {
+            const wc = await pullWardCouncilMeeting(tokenRef.current);
+            if(wc.wardCouncilMeeting){ setWardCouncilMeeting(wc.wardCouncilMeeting); wcmRef.current=wc.wardCouncilMeeting; }
           }
-          const wl = await pullWardCouncilLinks(tokenRef.current);
-          if(wl.links) setWcLinks(wl.links);
-        } catch(_) {}
+        } else {
+          const [cp, wc, ros] = await Promise.all([
+            pullCalendar(tokenRef.current),
+            pullWardCouncilMeeting(tokenRef.current),
+            pullRosterFromWardCouncil(tokenRef.current),
+          ]);
+          if(cp.calendar){ setCalendar(cp.calendar); calendarRef.current=cp.calendar; }
+          if(wc.wardCouncilMeeting){ setWardCouncilMeeting(wc.wardCouncilMeeting); wcmRef.current=wc.wardCouncilMeeting; }
+          if(ros.roster?.length){ setRoster(ros.roster); rosterRef.current=ros.roster; }
+          // Pull links for both sheets
+          try {
+            const { pullBishopricLinks, pullWardCouncilLinks } = await import("./sheets");
+            if(isAdminRef.current) {
+              const bl = await pullBishopricLinks(tokenRef.current);
+              if(bl.links) setBishopricLinks(bl.links);
+            }
+            const wl = await pullWardCouncilLinks(tokenRef.current);
+            if(wl.links) setWcLinks(wl.links);
+          } catch(_) {}
+        }
       } catch(e) { /* ward council sheet not yet configured */ }
       setHasPulled(true); setLastSync(new Date()); setSyncError(null);
       if(!silent){ setSyncStatus("idle"); notify.success("Data pulled from Google Sheets"); }
@@ -804,62 +858,70 @@ function MainApp({ user, token, onSignOut }) {
       <ToastStack/>
 
       {/* ── Header ── */}
-      <header style={{borderBottom:`1.5px solid ${C.border}`,padding:"0 28px",display:"flex",alignItems:"center",justifyContent:"space-between",height:58,position:"sticky",top:0,zIndex:50,background:C.surfaceWhite,boxShadow:"0 1px 0 rgba(0,0,0,.04)"}}>
-        <div style={{display:"flex",alignItems:"center",gap:24}}>
+      <header style={{borderBottom:`1.5px solid ${C.border}`,padding:`0 ${isMobile?"16px":"28px"}`,display:"flex",alignItems:"center",justifyContent:"space-between",height:58,position:"sticky",top:0,zIndex:50,background:C.surfaceWhite,boxShadow:"0 1px 0 rgba(0,0,0,.04)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:isMobile?12:24}}>
           <div style={{display:"flex",alignItems:"baseline",gap:6}}>
-            <span style={{fontSize:18,fontWeight:600,color:C.blue35}}>Ward</span>
-            <span style={{fontSize:18,fontWeight:400,fontStyle:"italic",color:C.blue25}}>Manager</span>
-            <span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textLight,marginLeft:4}}>{config.WARD_NAME}</span>
+            <span style={{fontSize:isMobile?16:18,fontWeight:600,color:C.blue35}}>Ward</span>
+            <span style={{fontSize:isMobile?16:18,fontWeight:400,fontStyle:"italic",color:C.blue25}}>Manager</span>
+            {!isMobile && <span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textLight,marginLeft:4}}>{config.WARD_NAME}</span>}
           </div>
-          <nav style={{display:"flex",gap:2}}>
-            {NAV_GROUPS.map(group => (
-              group.flat
-                ? <button key={group.id} className="tab-btn" onClick={() => setTab(group.id)}
-                    style={{
-                      padding:"5px 14px", borderRadius:6, fontSize:13,
-                      fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                      color: tab === group.id ? C.blue35 : C.textMuted,
-                      background: tab === group.id ? "rgba(0,85,129,.07)" : "transparent",
-                      borderBottom: `2.5px solid ${tab === group.id ? C.blue35 : "transparent"}`,
-                      fontWeight: tab === group.id ? 700 : 400,
-                    }}>
-                    {group.label}
-                  </button>
-                : <NavGroup key={group.id}
-                    group={group}
-                    activeTab={tab}
-                    isActiveGroup={activeGroup===group.id}
-                    onSelect={id=>setTab(id)}
-                  />
-            ))}
-          </nav>
+          {/* Desktop/tablet nav — hidden on mobile (uses bottom tab bar instead) */}
+          {!isMobile && (
+            <nav style={{display:"flex",gap:2}}>
+              {NAV_GROUPS.map(group => (
+                group.flat
+                  ? <button key={group.id} className="tab-btn" onClick={() => setTab(group.id)}
+                      style={{
+                        padding:"5px 14px", borderRadius:6, fontSize:13,
+                        fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                        color: tab === group.id ? C.blue35 : C.textMuted,
+                        background: tab === group.id ? "rgba(0,85,129,.07)" : "transparent",
+                        borderBottom: `2.5px solid ${tab === group.id ? C.blue35 : "transparent"}`,
+                        fontWeight: tab === group.id ? 700 : 400,
+                      }}>
+                      {group.label}
+                    </button>
+                  : <NavGroup key={group.id}
+                      group={group}
+                      activeTab={tab}
+                      isActiveGroup={activeGroup===group.id}
+                      onSelect={id=>setTab(id)}
+                    />
+              ))}
+            </nav>
+          )}
         </div>
 
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          {/* Connection status */}
-          <div title={connMsg||"Click to test connection"} onClick={doTestConnection} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:C.surfaceWarm,border:`1px solid ${C.borderLight}`,cursor:"pointer",transition:"border .2s"}}>
-            <span style={{width:7,height:7,borderRadius:"50%",background:connColors[connStatus]||C.textLight,animation:connStatus==="testing"?"pulse 1s infinite":"none"}}/>
-            <span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>
-              {connStatus==="unknown"?"Test"  :connStatus==="testing"?"Testing…":connStatus==="ok"?"Connected":connStatus==="warn"?"Check config":"Error"}
-            </span>
-          </div>
-
-          {/* Sync pill */}
-          <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:20,background:C.surfaceWarm,border:`1px solid ${isErr?C.red10:C.borderLight}`}}>
-            <span style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:isBusy?C.blue25:isErr?C.red15:C.green25,boxShadow:isBusy?"0 0 0 3px rgba(0,125,165,.2)":"none",animation:isBusy?"pulse 1s infinite":"none"}}/>
-            {syncLabel&&<span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:isErr?C.red15:C.textMuted,whiteSpace:"nowrap"}}>{syncLabel}</span>}
-          </div>
-
-          <button className="btn-secondary" onClick={pull} disabled={isBusy} style={{opacity:isBusy?.5:1,fontSize:11,padding:"6px 14px",display:"flex",alignItems:"center",gap:4}}><PullIcon/> Pull</button>
-          {isAdmin&&<button className="btn-primary" onClick={push} disabled={isBusy} style={{opacity:isBusy?.5:1,fontSize:11,padding:"6px 14px",display:"flex",alignItems:"center",gap:4}}><PushIcon/> Push</button>}
+        <div style={{display:"flex",alignItems:"center",gap:isMobile?6:8}}>
+          {/* Sync indicator — compact dot on mobile */}
+          {isMobile ? (
+            <div title={syncLabel} style={{width:8,height:8,borderRadius:"50%",background:isBusy?C.blue25:isErr?C.red15:C.green25,animation:isBusy?"pulse 1s infinite":"none",flexShrink:0}}/>
+          ) : (
+            <>
+              {/* Connection status */}
+              <div title={connMsg||"Click to test connection"} onClick={doTestConnection} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:C.surfaceWarm,border:`1px solid ${C.borderLight}`,cursor:"pointer",transition:"border .2s"}}>
+                <span style={{width:7,height:7,borderRadius:"50%",background:connColors[connStatus]||C.textLight,animation:connStatus==="testing"?"pulse 1s infinite":"none"}}/>
+                <span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>
+                  {connStatus==="unknown"?"Test":connStatus==="testing"?"Testing…":connStatus==="ok"?"Connected":connStatus==="warn"?"Check config":"Error"}
+                </span>
+              </div>
+              {/* Sync pill */}
+              <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:20,background:C.surfaceWarm,border:`1px solid ${isErr?C.red10:C.borderLight}`}}>
+                <span style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:isBusy?C.blue25:isErr?C.red15:C.green25,boxShadow:isBusy?"0 0 0 3px rgba(0,125,165,.2)":"none",animation:isBusy?"pulse 1s infinite":"none"}}/>
+                {syncLabel&&<span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:isErr?C.red15:C.textMuted,whiteSpace:"nowrap"}}>{syncLabel}</span>}
+              </div>
+              <button className="btn-secondary" onClick={pull} disabled={isBusy} style={{opacity:isBusy?.5:1,fontSize:11,padding:"6px 14px",display:"flex",alignItems:"center",gap:4}}><PullIcon/> Pull</button>
+              {isAdmin&&<button className="btn-primary" onClick={push} disabled={isBusy} style={{opacity:isBusy?.5:1,fontSize:11,padding:"6px 14px",display:"flex",alignItems:"center",gap:4}}><PushIcon/> Push</button>}
+            </>
+          )}
 
           {/* Settings — admin only */}
-          {isAdmin&&<button onClick={()=>setShowSettings(true)} title="Settings" style={{background:"none",border:`1.5px solid ${C.border}`,borderRadius:8,width:34,height:34,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:C.textMuted,fontSize:16}}><Settings2 size={15}/></button>}
+          {isAdmin&&<button onClick={()=>setShowSettings(true)} title="Settings" style={{background:"none",border:`1.5px solid ${C.border}`,borderRadius:8,width:34,height:34,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:C.textMuted}}><Settings2 size={15}/></button>}
 
           {/* User chip */}
-          <div style={{display:"flex",alignItems:"center",gap:8,padding:"4px 12px",background:C.surfaceWarm,border:`1px solid ${C.border}`,borderRadius:20}}>
+          <div style={{display:"flex",alignItems:"center",gap:isMobile?4:8,padding:isMobile?"4px 8px":"4px 12px",background:C.surfaceWarm,border:`1px solid ${C.border}`,borderRadius:20}}>
             {user.picture?<img src={user.picture} alt="" style={{width:22,height:22,borderRadius:"50%"}}/>:<User size={16} color={C.textMuted}/>}
-            <span style={{fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>{user.name?.split(" ")[0]}</span>
+            {!isMobile && <span style={{fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>{user.name?.split(" ")[0]}</span>}
             <button onClick={onSignOut} title="Sign out" style={{background:"none",border:"none",color:C.textLight,cursor:"pointer",display:"flex",alignItems:"center"}}><LogOut size={13}/></button>
           </div>
         </div>
@@ -867,21 +929,88 @@ function MainApp({ user, token, onSignOut }) {
 
 
 
-      <main style={{padding:"24px 28px",maxWidth:1440,margin:"0 auto"}}>
+      <main style={{padding:isMobile?"16px 12px 80px":"24px 28px",maxWidth:1440,margin:"0 auto"}}>
         {isAdmin&&tab==="appointments"&&<AppointmentsTab data={appointments} setData={setAppts} roster={roster}/>}
         {isAdmin&&tab==="callings"    &&<PipelineTab title="Callings"   stages={CALLING_STAGES}   data={callings}   setData={setCallings}/>}
         {isAdmin&&tab==="releasings"  &&<PipelineTab title="Releasings" stages={RELEASING_STAGES} data={releasings} setData={setReleasings}/>}
         {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab}/>}
         {isAdmin&&tab==="members"     &&<MembersTab  data={members}  setData={setMembers} callings={callings} releasings={releasings}/>}
-        {isAdmin&&tab==="alerts"      &&<AlertsTab appointments={appointments} callings={callings} releasings={releasings}/>}
-        {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} tokenRef={tokenRef}/>}
-        {(isAdmin||isWardCouncil)&&tab==="calendar"&&<CalendarTab calendar={calendar} setCalendar={setCalendar} token={token}/>}
+        {isAdmin&&tab==="alerts"      &&<AlertsTab appointments={appointments} callings={callings} releasings={releasings} isMobile={isMobile}/>}
+        {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} tokenRef={tokenRef} isMobile={isMobile}/>}
+        {(isAdmin||isWardCouncil)&&tab==="calendar"&&<CalendarTab calendar={calendar} setCalendar={setCalendar} token={token} isMobile={isMobile}/>}
         {(isAdmin||isWardCouncil)&&tab==="ward-council"&&<WardCouncilTab wardCouncilMeeting={wardCouncilMeeting} setWardCouncilMeeting={setWardCouncilMeeting} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isAdmin={isAdmin}/>}
         {(isAdmin||isWardCouncil)&&tab==="links"&&<LinksTab bishopricLinks={isAdmin?bishopricLinks:null} setBishopricLinks={setBishopricLinks} wcLinks={wcLinks} setWcLinks={setWcLinks} token={token} isAdmin={isAdmin}/>}
         {!isAdmin&&!isWardCouncil&&<UnauthorizedView/>}
       </main>
 
       {showSettings&&<SettingsModal token={token} onTestConn={doTestConnection} connStatus={connStatus} connMsg={connMsg} roster={roster} setRoster={setRoster} onClose={()=>setShowSettings(false)}/>}
+
+      {/* ── Bottom Tab Bar (mobile only) ── */}
+      {isMobile && (
+        <nav className="bottom-tab-bar">
+          {NAV_GROUPS.map(group => {
+            const isFlat = group.flat;
+            const tabId = isFlat ? group.id : null;
+            const isActive = isFlat ? tab === group.id : group.children?.some(c => c.id === tab);
+            const totalBadge = isFlat ? null : group.children?.reduce((s,c)=>s+(c.badge||0),0)||null;
+
+            // Icon map for tab items
+            const iconMap = {
+              "ward-council": <ClipboardCheck size={20}/>,
+              "calendar":     <Calendar size={20}/>,
+              "links":        <Link2 size={20}/>,
+              "scheduling":   <ClipboardList size={20}/>,
+              "meetings":     <Home size={20}/>,
+              "admin":        <Users size={20}/>,
+              "calendar-group": <Calendar size={20}/>,
+              "links-group":  <Link2 size={20}/>,
+            };
+            const icon = iconMap[group.id] || <Home size={20}/>;
+
+            if (isFlat) {
+              return (
+                <button key={group.id} className={`bottom-tab-item ${isActive?"active":""}`}
+                  onClick={() => setTab(group.id)}>
+                  {icon}
+                  <span>{group.label}</span>
+                </button>
+              );
+            }
+
+            // Grouped — tap opens first child or cycles through children
+            const firstChild = group.children?.[0];
+            return (
+              <button key={group.id} className={`bottom-tab-item ${isActive?"active":""}`}
+                onClick={() => {
+                  if (isActive) {
+                    // Cycle to next child in group
+                    const idx = group.children.findIndex(c => c.id === tab);
+                    const next = group.children[(idx+1) % group.children.length];
+                    setTab(next.id);
+                  } else {
+                    setTab(firstChild?.id);
+                  }
+                }}
+                style={{position:"relative"}}>
+                {totalBadge > 0 && (
+                  <span style={{position:"absolute",top:6,right:"calc(50% - 14px)",minWidth:16,height:16,
+                    borderRadius:8,background:C.gold20,color:"#fff",fontSize:9,fontWeight:700,
+                    display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px"}}>
+                    {totalBadge}
+                  </span>
+                )}
+                {icon}
+                <span>{group.label}</span>
+                {isActive && group.children && group.children.length > 1 && (
+                  <span style={{fontSize:8,color:"inherit",opacity:.6,marginTop:-2}}>
+                    {group.children.find(c=>c.id===tab)?.label}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+      )}
     </div>
   );
 }
@@ -920,7 +1049,7 @@ function AppointmentsTab({data,setData,roster=[]}){
         </button>
       </HeroBanner>
 
-      <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:16}}>
         {APPT_STAGES.map(s=>{
           const a=stageFilters.includes(s);const st=APPT_STAGE_STYLE[s];
           return<div key={s} onClick={()=>toggle(s)} style={{borderRadius:12,padding:"14px 18px",cursor:"pointer",flex:1,minWidth:140,border:`1.5px solid ${a?st.border:C.border}`,background:a?st.bg:C.surfaceWhite,opacity:!showingAll&&!a?.42:1,boxShadow:a?"0 2px 8px rgba(0,0,0,.06)":"none",transition:"all .18s",position:"relative",overflow:"hidden"}}>
@@ -1291,7 +1420,7 @@ function useMeetingSync({ getData, saveFn, pullFn, diffFn, tokenRef, onApply, en
         }
       } catch (_) { /* silent */ }
     };
-    pollTimer.current = setInterval(poll, 30000);
+    pollTimer.current = setInterval(poll, 2 * 60 * 1000); // 2 min — conserve API quota
     return () => clearInterval(pollTimer.current);
   }, [enabled, pullFn, diffFn, getData, tokenRef]);
 
@@ -2423,7 +2552,7 @@ function AddTaskRow({ onAdd, roster = [], allRoles = false }) {
 
 
 // ─── Calendar Tab ──────────────────────────────────────────────────────────────
-function CalendarTab({ calendar, setCalendar, token }) {
+function CalendarTab({ calendar, setCalendar, token, isMobile=false }) {
   const today = new Date();
   const [viewYear,  setViewYear]  = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth()); // 0-indexed
@@ -2548,7 +2677,7 @@ function CalendarTab({ calendar, setCalendar, token }) {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 20, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 320px", gap: isMobile ? 12 : 20, alignItems: "start" }}>
         {/* ── Month Grid ── */}
         <div style={{ background: C.surfaceWhite, borderRadius: 12, border: `1.5px solid ${C.border}`, overflow: "hidden" }}>
           {/* Month nav */}
@@ -3871,7 +4000,7 @@ function RosterEditor({roster,setRoster,token}) {
 
 
 // ─── Alerts Tab ───────────────────────────────────────────────────────────────
-function AlertsTab({appointments, callings, releasings}){
+function AlertsTab({appointments, callings, releasings, isMobile=false}){
   const[source,setSource]=useState("Appointments");
   const[status,setStatus]=useState("");
   const[sending1,setSending1]=useState(false);
@@ -3969,7 +4098,7 @@ function AlertsTab({appointments, callings, releasings}){
     <div className="animate-in">
       <HeroBanner title="Alerts" sub="Send status reports to Slack channels"/>
 
-      <div style={{display:"grid",gridTemplateColumns:"340px 1fr",gap:24,marginTop:4}}>
+      <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"340px 1fr",gap:isMobile?16:24,marginTop:4}}>
 
         {/* ── Left panel: controls ── */}
         <div style={{display:"flex",flexDirection:"column",gap:16}}>
@@ -4153,7 +4282,7 @@ ${preview.length} record${preview.length===1?"":"s"} · ${source} · Ward Manage
 }
 
 
-function SacramentTab({ data, setData, saveFn, pullFn, tokenRef }) {
+function SacramentTab({ data, setData, saveFn, pullFn, tokenRef, isMobile=false }) {
   const allDates = [...new Set(data.map(r=>r.date).filter(Boolean))].sort().reverse();
   // Always default to the upcoming Sunday (matches Bishopric tab behaviour)
   const [activeDate, setActiveDate] = useState(nextSunday);
@@ -4319,16 +4448,18 @@ function SacramentTab({ data, setData, saveFn, pullFn, tokenRef }) {
           </div>
 
           <div style={{background:C.surfaceWhite,border:`1.5px solid ${C.border}`,borderRadius:12,overflow:"hidden"}}>
-            {/* Header row */}
-            <div style={{display:"grid",gridTemplateColumns:"32px 150px 1fr 1fr 180px 32px",gap:0,padding:"8px 16px",background:C.surfaceWarm,borderBottom:`1px solid ${C.border}`}}>
-              <div/>
-              <div style={{fontSize:10,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Section</div>
-              <div style={{fontSize:10,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Label</div>
-              <div style={{fontSize:10,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Name / Details</div>
-              <div style={{fontSize:10,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Notes</div>
-              <div/>
-            </div>
-            <DraggableProgramList items={sortedProgram} onReorder={handleReorder} onUpdate={updateItem} onDelete={deleteItem}/>
+            {/* Header row — desktop only */}
+            {!isMobile && (
+              <div style={{display:"grid",gridTemplateColumns:"32px 150px 1fr 1fr 180px 32px",gap:0,padding:"8px 16px",background:C.surfaceWarm,borderBottom:`1px solid ${C.border}`}}>
+                <div/>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Section</div>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Label</div>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Name / Details</div>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Notes</div>
+                <div/>
+              </div>
+            )}
+            <DraggableProgramList items={sortedProgram} onReorder={handleReorder} onUpdate={updateItem} onDelete={deleteItem} isMobile={isMobile}/>
           </div>
 
           {/* Add item controls */}
@@ -4359,7 +4490,7 @@ function SacramentTab({ data, setData, saveFn, pullFn, tokenRef }) {
   );
 }
 
-function DraggableProgramList({ items, onReorder, onUpdate, onDelete }) {
+function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=false }) {
   const dragItem = useRef(null);
   const dragOver = useRef(null);
   const [dragIdx, setDragIdx] = useState(null);
@@ -4390,74 +4521,79 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete }) {
       {items.map((item, idx) => {
         const meta = SECTION_META[item.section]||{icon:"•",color:C.textPrimary,bg:C.surfaceWarm,border:C.border};
         const isDragging = dragIdx === idx;
-        return (
-          <div key={item.id}
-            draggable
-            onDragStart={e=>handleDragStart(e,idx)}
-            onDragEnd={handleDragEnd}
-            onDragOver={e=>handleDragOver(e,idx)}
-            style={{
-              display:"grid",gridTemplateColumns:"32px 150px 1fr 1fr 180px 32px",
-              gap:0,alignItems:"center",
-              borderBottom:`1px solid ${C.borderLight}`,
-              padding:"7px 16px",
-              opacity: isDragging ? 0.4 : 1,
-              background: isDragging ? C.surfaceWarm : "transparent",
-              transition:"background .1s",
-              cursor:"grab",
-            }}
-            onMouseEnter={e=>{ if(!isDragging) e.currentTarget.style.background=C.surfaceWarm; }}
-            onMouseLeave={e=>{ if(!isDragging) e.currentTarget.style.background="transparent"; }}
-          >
-            {/* Drag handle */}
-            <div style={{color:C.textLight,display:"flex",alignItems:"center",cursor:"grab",paddingRight:6}}>
-              <DragHandleIcon/>
+        return isMobile ? (
+            /* Mobile card layout */
+            <div key={item.id} style={{borderBottom:`1px solid ${C.borderLight}`,padding:"12px 14px",background:"transparent"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{fontSize:11,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                  background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:10,padding:"2px 8px"}}>
+                  {item.section}
+                </span>
+                <button onClick={()=>onDelete(item.id)} style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"4px",display:"flex",alignItems:"center"}}>
+                  <XIcon/>
+                </button>
+              </div>
+              <input value={item.label} onChange={e=>onUpdate(item.id,"label",e.target.value)} placeholder="Label"
+                style={{width:"100%",fontSize:12,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                  border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"6px 10px",marginBottom:6,background:C.surfaceWarm,boxSizing:"border-box"}}/>
+              <input value={item.value} onChange={e=>onUpdate(item.id,"value",e.target.value)} placeholder={placeholderForLabel(item.label)}
+                style={{width:"100%",fontSize:14,fontFamily:"Georgia,serif",color:C.textPrimary,
+                  border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"8px 10px",marginBottom:6,background:"#fff",boxSizing:"border-box"}}/>
+              <input value={item.notes} onChange={e=>onUpdate(item.id,"notes",e.target.value)} placeholder="Notes…"
+                style={{width:"100%",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted,
+                  border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"6px 10px",background:C.surfaceWarm,boxSizing:"border-box"}}/>
             </div>
-            {/* Section badge */}
-            <div style={{display:"flex",alignItems:"center",gap:5,paddingRight:8}}>
-              <span style={{fontSize:13}}>{meta.icon}</span>
-              <span style={{fontSize:11,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:10,padding:"1px 7px",whiteSpace:"nowrap"}}>
-                {item.section}
-              </span>
+          ) : (
+            /* Desktop row layout */
+            <div key={item.id}
+              draggable
+              onDragStart={e=>handleDragStart(e,idx)}
+              onDragEnd={handleDragEnd}
+              onDragOver={e=>handleDragOver(e,idx)}
+              style={{
+                display:"grid",gridTemplateColumns:"32px 150px 1fr 1fr 180px 32px",
+                gap:0,alignItems:"center",
+                borderBottom:`1px solid ${C.borderLight}`,
+                padding:"7px 16px",
+                opacity: isDragging ? 0.4 : 1,
+                background: isDragging ? C.surfaceWarm : "transparent",
+                transition:"background .1s",
+                cursor:"grab",
+              }}
+              onMouseEnter={e=>{ if(!isDragging) e.currentTarget.style.background=C.surfaceWarm; }}
+              onMouseLeave={e=>{ if(!isDragging) e.currentTarget.style.background="transparent"; }}
+            >
+              <div style={{color:C.textLight,display:"flex",alignItems:"center",cursor:"grab",paddingRight:6}}>
+                <DragHandleIcon/>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:5,paddingRight:8}}>
+                <span style={{fontSize:13}}>{meta.icon}</span>
+                <span style={{fontSize:11,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                  background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:10,padding:"1px 7px",whiteSpace:"nowrap"}}>
+                  {item.section}
+                </span>
+              </div>
+              <input value={item.label} onChange={e=>onUpdate(item.id,"label",e.target.value)} placeholder="Label"
+                style={{border:"none",background:"transparent",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                  fontWeight:600,color:meta.color,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
+                onFocus={e=>e.target.style.background=meta.bg}
+                onBlur={e=>e.target.style.background="transparent"}/>
+              <input value={item.value} onChange={e=>onUpdate(item.id,"value",e.target.value)} placeholder={placeholderForLabel(item.label)}
+                style={{border:"none",background:"transparent",fontSize:13,fontFamily:"Georgia,serif",color:C.textPrimary,
+                  padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
+                onFocus={e=>e.target.style.background=C.surfaceWarm}
+                onBlur={e=>e.target.style.background="transparent"}/>
+              <input value={item.notes} onChange={e=>onUpdate(item.id,"notes",e.target.value)} placeholder="Notes..."
+                style={{border:"none",background:"transparent",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                  color:C.textMuted,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
+                onFocus={e=>e.target.style.background=C.surfaceWarm}
+                onBlur={e=>e.target.style.background="transparent"}/>
+              <button onClick={()=>onDelete(item.id)} style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"4px",borderRadius:4,display:"flex",alignItems:"center"}}
+                onMouseEnter={e=>e.currentTarget.style.color=C.red15}
+                onMouseLeave={e=>e.currentTarget.style.color=C.textLight}>
+                <XIcon/>
+              </button>
             </div>
-            {/* Label inline edit */}
-            <input
-              value={item.label}
-              onChange={e=>onUpdate(item.id,"label",e.target.value)}
-              placeholder="Label"
-              style={{border:"none",background:"transparent",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                fontWeight:600,color:meta.color,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
-              onFocus={e=>e.target.style.background=meta.bg}
-              onBlur={e=>e.target.style.background="transparent"}
-            />
-            {/* Value inline edit */}
-            <input
-              value={item.value}
-              onChange={e=>onUpdate(item.id,"value",e.target.value)}
-              placeholder={placeholderForLabel(item.label)}
-              style={{border:"none",background:"transparent",fontSize:13,fontFamily:"Georgia,serif",color:C.textPrimary,
-                padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
-              onFocus={e=>e.target.style.background=C.surfaceWarm}
-              onBlur={e=>e.target.style.background="transparent"}
-            />
-            {/* Notes inline edit */}
-            <input
-              value={item.notes}
-              onChange={e=>onUpdate(item.id,"notes",e.target.value)}
-              placeholder="Notes..."
-              style={{border:"none",background:"transparent",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                color:C.textMuted,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
-              onFocus={e=>e.target.style.background=C.surfaceWarm}
-              onBlur={e=>e.target.style.background="transparent"}
-            />
-            {/* Delete */}
-            <button onClick={()=>onDelete(item.id)} style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"4px",borderRadius:4,display:"flex",alignItems:"center"}}
-              onMouseEnter={e=>e.currentTarget.style.color=C.red15}
-              onMouseLeave={e=>e.currentTarget.style.color=C.textLight}>
-              <XIcon/>
-            </button>
-          </div>
         );
       })}
     </div>

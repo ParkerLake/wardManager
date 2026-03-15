@@ -178,6 +178,21 @@ export async function pullAll(token) {
   };
 }
 
+// Lightweight background pull — only appointments/callings/releasings (3 calls)
+// Used for silent background refreshes to stay under API quota
+export async function sheetsLightPull(token) {
+  const [a, c, r] = await Promise.all([
+    bishopricReq(token, "Appointments!A:F"),
+    bishopricReq(token, "Callings!A:D"),
+    bishopricReq(token, "Releasings!A:D"),
+  ]);
+  return {
+    appointments: rowsToAppointments(a.values),
+    callings:     rowsToCallings(c.values),
+    releasings:   rowsToCallings(r.values),
+  };
+}
+
 export async function pullSacrament(token) {
   if (!SSID() || SSID().includes("YOUR_")) return { sacramentProgram: [] };
   const sp = await sacramentReq(token, "SacramentProgram!A:F").catch(() => ({ values: [] }));
