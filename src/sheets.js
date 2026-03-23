@@ -55,10 +55,22 @@ export async function testConnection(token) {
 
 export function rowsToAppointments(rows) {
   if (!rows || rows.length < 2) return [];
-  return rows.slice(1).map((r, i) => ({
-    id: `a_${i}`, name: r[0]||"", status: r[1]||"Need to Schedule",
-    owner: r[2]||"", purpose: r[3]||"", apptDate: r[4]||"", notes: r[5]||"",
-  }));
+  // Support both old format (no ID column) and new format (ID in col 0)
+  const hasIdCol = rows[0][0] === "ID";
+  return rows.slice(1).map((r, i) => {
+    if (hasIdCol) {
+      return {
+        id: r[0] || `a_${i}`, name: r[1]||"", status: r[2]||"Need to Schedule",
+        owner: r[3]||"", purpose: r[4]||"", apptDate: r[5]||"", notes: r[6]||"",
+      };
+    } else {
+      // Legacy: no ID column — generate stable ID from row content
+      return {
+        id: `a_${i}`, name: r[0]||"", status: r[1]||"Need to Schedule",
+        owner: r[2]||"", purpose: r[3]||"", apptDate: r[4]||"", notes: r[5]||"",
+      };
+    }
+  });
 }
 
 export function rowsToCallings(rows) {
@@ -120,8 +132,8 @@ export function rosterToRows(data) {
 
 export function appointmentsToRows(data) {
   return [
-    ["Name", "Status", "Owner", "Purpose", "Appt Date", "Notes"],
-    ...data.map(a => [a.name, a.status, a.owner, a.purpose, a.apptDate, a.notes]),
+    ["ID", "Name", "Status", "Owner", "Purpose", "Appt Date", "Notes"],
+    ...data.map(a => [a.id || `a_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, a.name, a.status, a.owner, a.purpose, a.apptDate, a.notes]),
   ];
 }
 
@@ -161,7 +173,7 @@ export function sacramentProgramToRows(data) {
 
 export async function pullAll(token) {
   const [a, c, r, mb, bm, ros] = await Promise.all([
-    bishopricReq(token, "Appointments!A:F"),
+    bishopricReq(token, "Appointments!A:G"),
     bishopricReq(token, "Callings!A:D"),
     bishopricReq(token, "Releasings!A:D"),
     bishopricReq(token, "Members!A:E").catch(() => ({ values: [] })),
@@ -182,7 +194,7 @@ export async function pullAll(token) {
 // Used for silent background refreshes to stay under API quota
 export async function sheetsLightPull(token) {
   const [a, c, r] = await Promise.all([
-    bishopricReq(token, "Appointments!A:F"),
+    bishopricReq(token, "Appointments!A:G"),
     bishopricReq(token, "Callings!A:D"),
     bishopricReq(token, "Releasings!A:D"),
   ]);
@@ -201,7 +213,7 @@ export async function pullSacrament(token) {
 
 export async function pushAll(token, { appointments, callings, releasings, members }) {
   const ops = [
-    bishopricReq(token, "Appointments!A:F", "PUT", { values: appointmentsToRows(appointments) }),
+    bishopricReq(token, "Appointments!A:G", "PUT", { values: appointmentsToRows(appointments) }),
     bishopricReq(token, "Callings!A:D",     "PUT", { values: callingsToRows(callings) }),
     bishopricReq(token, "Releasings!A:D",   "PUT", { values: callingsToRows(releasings) }),
   ];

@@ -8,10 +8,10 @@ const SCOPES    = "https://www.googleapis.com/auth/spreadsheets email profile op
 export function useAuth() {
   const [user,    setUser]    = useState(() => {
     try {
-      const u = JSON.parse(sessionStorage.getItem(USER_KEY));
+      const u = JSON.parse(localStorage.getItem(USER_KEY));
       // Discard if already expired
       if (u && u.expiresAt && Date.now() > u.expiresAt) {
-        sessionStorage.removeItem(USER_KEY); sessionStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USER_KEY); localStorage.removeItem(TOKEN_KEY);
         return null;
       }
       return u;
@@ -19,9 +19,9 @@ export function useAuth() {
   });
   const [token,   setToken]   = useState(() => {
     try {
-      const u = JSON.parse(sessionStorage.getItem(USER_KEY));
+      const u = JSON.parse(localStorage.getItem(USER_KEY));
       if (u && u.expiresAt && Date.now() > u.expiresAt) return null;
-      return sessionStorage.getItem(TOKEN_KEY) || null;
+      return localStorage.getItem(TOKEN_KEY) || null;
     } catch { return null; }
   });
   const [error,   setError]   = useState(null);
@@ -63,8 +63,8 @@ export function useAuth() {
           }
           const userData = { email: profile.email, name: profile.name, picture: profile.picture,
             expiresAt: Date.now() + (tr.expires_in - 60) * 1000 };
-          sessionStorage.setItem(TOKEN_KEY, tr.access_token);
-          sessionStorage.setItem(USER_KEY, JSON.stringify(userData));
+          localStorage.setItem(TOKEN_KEY, tr.access_token);
+          localStorage.setItem(USER_KEY, JSON.stringify(userData));
           setToken(tr.access_token); setUser(userData); setLoading(false);
         } catch {
           setError("Could not verify your Google account. Please try again.");
@@ -79,7 +79,7 @@ export function useAuth() {
 
   const signOut = useCallback(() => {
     if (token && window.google) window.google.accounts.oauth2.revoke(token, () => {});
-    sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(USER_KEY);
+    localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY);
     setToken(null); setUser(null); setError(null);
   }, [token]);
 
@@ -95,10 +95,26 @@ export function useAuth() {
         callback: (tr) => {
           if (!tr.error) {
             const u = { ...user, expiresAt: Date.now() + (tr.expires_in - 60) * 1000 };
-            sessionStorage.setItem(TOKEN_KEY, tr.access_token);
-            sessionStorage.setItem(USER_KEY, JSON.stringify(u));
+            localStorage.setItem(TOKEN_KEY, tr.access_token);
+            localStorage.setItem(USER_KEY, JSON.stringify(u));
             setToken(tr.access_token); setUser(u);
-          } else signOut();
+          } else {
+            // Silent refresh failed — try once with consent prompt before signing out
+            try {
+              const retry = window.google.accounts.oauth2.initTokenClient({
+                client_id: config.GOOGLE_CLIENT_ID, scope: SCOPES, prompt: "consent",
+                callback: (tr2) => {
+                  if (!tr2.error) {
+                    const u = { ...user, expiresAt: Date.now() + (tr2.expires_in - 60) * 1000 };
+                    localStorage.setItem(TOKEN_KEY, tr2.access_token);
+                    localStorage.setItem(USER_KEY, JSON.stringify(u));
+                    setToken(tr2.access_token); setUser(u);
+                  } else signOut();
+                },
+              });
+              retry.requestAccessToken({ prompt: "none" });
+            } catch { signOut(); }
+          }
         },
       });
       client.requestAccessToken({ prompt: "" });

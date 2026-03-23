@@ -223,8 +223,8 @@ function useWindowWidth() {
     window.addEventListener('resize', handler);
     window.addEventListener('orientationchange', handler);
     // Also handle DevTools device simulation which changes screen.width
-    const mo = window.matchMedia('(max-width: 639px)');
-    const mHandler = (e) => setWidth(e.matches ? 400 : window.innerWidth);
+    const mo = window.matchMedia('(max-width: 1023px)');
+    const mHandler = (e) => setWidth(e.matches ? 600 : window.innerWidth);
     mo.addEventListener('change', mHandler);
     return () => {
       window.removeEventListener('resize', handler);
@@ -237,28 +237,30 @@ function useWindowWidth() {
 // Breakpoints: mobile < 640, tablet 640–1024, desktop > 1024
 
 // ─── Toast System ─────────────────────────────────────────────────────────────
-let _toastSet = null;
-export function useToasts() {
-  const [toasts, setToasts] = useState([]);
-  _toastSet = setToasts;
-  const dismiss = id => setToasts(t => t.filter(x => x.id !== id));
-  return { toasts, dismiss };
-}
-function toast(type, msg, duration = 4000) {
-  if (!_toastSet) return;
-  const id = Date.now();
-  _toastSet(t => [...t, { id, type, msg }]);
-  setTimeout(() => _toastSet(t => t.filter(x => x.id !== id)), duration);
-}
+// Single stable ref shared across the module — avoids stale closure issues
+const _toastRef = { set: null };
+
 export const notify = {
-  success: (m, d) => toast("success", m, d),
-  error:   (m, d) => toast("error",   m, d),
-  info:    (m, d) => toast("info",    m, d),
-  warn:    (m, d) => toast("warn",    m, d),
+  success: (msg, duration) => _fireToast("success", msg, duration),
+  error:   (msg, duration) => _fireToast("error",   msg, duration),
+  info:    (msg, duration) => _fireToast("info",    msg, duration),
+  warn:    (msg, duration) => _fireToast("warn",    msg, duration),
 };
 
+function _fireToast(type, msg, duration = 4000) {
+  if (!_toastRef.set) return;
+  const id = `t_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+  _toastRef.set(prev => [...prev, { id, type, msg }]);
+  setTimeout(() => {
+    if (_toastRef.set) _toastRef.set(prev => prev.filter(x => x.id !== id));
+  }, duration);
+}
+
 function ToastStack() {
-  const { toasts, dismiss } = useToasts();
+  const [toasts, setToasts] = useState([]);
+  // Register setter into stable ref on every render so it's always current
+  _toastRef.set = setToasts;
+  const dismiss = id => setToasts(prev => prev.filter(x => x.id !== id));
   const icons = { success:<Check size={14}/>, error:<XCircle size={14}/>, info:<Info size={14}/>, warn:<AlertTriangle size={14}/> };
   return (
     <div className="toast-stack">
@@ -266,7 +268,11 @@ function ToastStack() {
         <div key={t.id} className={`toast toast-${t.type} toast-in`}>
           <span style={{fontWeight:700,fontSize:16,flexShrink:0}}>{icons[t.type]}</span>
           <span style={{flex:1,lineHeight:1.5}}>{t.msg}</span>
-          <button onClick={()=>dismiss(t.id)} style={{background:"none",border:"none",cursor:"pointer",color:"inherit",opacity:.6,padding:"0 0 0 6px",flexShrink:0,display:"flex",alignItems:"center"}}><X size={13}/></button>
+          <button onClick={()=>dismiss(t.id)}
+            style={{background:"none",border:"none",cursor:"pointer",color:"inherit",
+              opacity:.6,padding:"0 0 0 6px",flexShrink:0,display:"flex",alignItems:"center"}}>
+            <X size={13}/>
+          </button>
         </div>
       ))}
     </div>
@@ -428,7 +434,7 @@ function OwnerChip({ owner, onChange, compact, roster=[] }) {
 }
 
 // ─── NavGroup — grouped dropdown nav item ────────────────────────────────────
-function NavGroup({ group, activeTab, isActiveGroup, onSelect }) {
+function NavGroup({ group, activeTab, isActiveGroup, onSelect, compact=false }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -440,22 +446,22 @@ function NavGroup({ group, activeTab, isActiveGroup, onSelect }) {
   }, []);
 
   // Total badge count across children
-  const totalBadge = group.children.reduce((sum, c) => sum + (c.badge || 0), 0);
-
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button
         className="tab-btn"
         onClick={() => setOpen(o => !o)}
         style={{
-          padding: "5px 14px", borderRadius: 6, fontSize: 13,
+          padding: compact ? "5px 8px" : "5px 14px",
+          borderRadius: 6,
+          fontSize: compact ? 11 : 13,
           fontFamily: "'Helvetica Neue',Arial,sans-serif",
           color: isActiveGroup ? C.blue35 : C.textMuted,
           background: isActiveGroup ? "rgba(0,85,129,.07)" : "transparent",
           borderBottom: `2.5px solid ${isActiveGroup ? C.blue35 : "transparent"}`,
           fontWeight: isActiveGroup ? 700 : 400,
-          display: "flex", alignItems: "center", gap: 5,
-          position: "relative",
+          display: "flex", alignItems: "center", gap: compact ? 3 : 5,
+          position: "relative", whiteSpace: "nowrap",
         }}>
         {group.label}
         <svg width="9" height="6" viewBox="0 0 9 6" fill="none" style={{
@@ -464,14 +470,7 @@ function NavGroup({ group, activeTab, isActiveGroup, onSelect }) {
         }}>
           <path d="M1 1L4.5 5L8 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
-        {totalBadge > 0 && (
-          <span style={{ position: "absolute", top: -5, right: -7, minWidth: 16, height: 16,
-            borderRadius: 8, background: C.gold20, color: "#fff", fontSize: 9, fontWeight: 700,
-            display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px",
-            pointerEvents: "none", boxShadow: "0 1px 3px rgba(0,0,0,.2)" }}>
-            {totalBadge}
-          </span>
-        )}
+
       </button>
 
       {open && (
@@ -495,13 +494,7 @@ function NavGroup({ group, activeTab, isActiveGroup, onSelect }) {
                 fontWeight: activeTab === child.id ? 700 : 400,
               }}>
               <span>{child.label}</span>
-              {child.badge > 0 && (
-                <span style={{ minWidth: 18, height: 18, borderRadius: 9,
-                  background: C.gold20, color: "#fff", fontSize: 10, fontWeight: 700,
-                  display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>
-                  {child.badge}
-                </span>
-              )}
+
             </button>
           ))}
         </div>
@@ -547,8 +540,9 @@ function LoginScreen({ onSignIn, error, loading }) {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 function MainApp({ user, token, onSignOut }) {
   const windowWidth = useWindowWidth();
-  const isMobile  = windowWidth < 640;
-  const isTablet  = windowWidth >= 640 && windowWidth < 1024;
+  const isMobile  = windowWidth < 1024;  // everything below laptop gets bottom tab bar
+  const isTablet  = false;               // unused — single breakpoint approach
+  const isCompact = false;               // unused — no compact mode needed
   const [tab,setTab]               = useState("appointments");
   const [appointments,setAppts]    = useState([]);
   const [callings,setCallings]     = useState([]);
@@ -579,7 +573,8 @@ function MainApp({ user, token, onSignOut }) {
     relRef=useRef(releasings),bmRef=useRef(bishopricMeeting),membRef=useRef(members),rosterRef=useRef(roster),
     wcmRef=useRef(wardCouncilMeeting),
     sacrRef=useRef(sacramentProgram),tabRef=useRef(tab),calendarRef=useRef(calendar),
-    pulledRef=useRef(hasPulled),pushTimer=useRef(null),pushing=useRef(false);
+    pulledRef=useRef(hasPulled),pushTimer=useRef(null),pushing=useRef(false),
+    autoApptGuard=useRef(null); // tracks last callings+releasings signature to prevent duplicate auto-appts
 
   useEffect(()=>{tokenRef.current=token;},[token]);
   useEffect(()=>{apptRef.current=appointments;},[appointments]);
@@ -770,7 +765,22 @@ function MainApp({ user, token, onSignOut }) {
   useEffect(()=>{
     if(!hasPulled) return;
 
-    const hasAppt=(name,purpose,calling)=>appointments.some(a=>
+    // Build a signature of the current callings+releasings data.
+    // If it matches the last run, skip — prevents React re-renders and
+    // Strict Mode double-invocation from creating duplicates.
+    const sig = JSON.stringify(
+      [...callings, ...releasings]
+        .filter(x => ["Approved to Call","Approved to Release","Sustained"].includes(x.stage) && x.name)
+        .map(x => `${x.name}|${x.stage}|${x.calling}`)
+        .sort()
+    );
+    if (autoApptGuard.current === sig) return;
+    autoApptGuard.current = sig;
+
+    // Use apptRef (not appointments state) to avoid this effect re-firing
+    // when setAppts updates appointments — apptRef stays current via its own useEffect
+    const currentAppts = apptRef.current || [];
+    const hasAppt=(name,purpose,calling)=>currentAppts.some(a=>
       a.name.toLowerCase()===name.toLowerCase() &&
       a.purpose===purpose &&
       a.notes===calling &&
@@ -778,30 +788,58 @@ function MainApp({ user, token, onSignOut }) {
     );
 
     const toCreate=[];
+    const seen = new Set(); // guard against same-loop duplicates
 
     callings.forEach(c=>{
       if(c.stage!=="Approved to Call"||!c.name) return;
-      if(!hasAppt(c.name,"Calling",c.calling))
+      const key = `${c.name}|Calling|${c.calling}`;
+      if(seen.has(key)) return;
+      if(!hasAppt(c.name,"Calling",c.calling)) {
+        seen.add(key);
         toCreate.push({id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
           name:c.name,status:"Need to Schedule",owner:"Bishop",
           purpose:"Calling",apptDate:"",notes:c.calling});
+      }
     });
 
     releasings.forEach(r=>{
       if(r.stage!=="Approved to Release"||!r.name) return;
-      if(!hasAppt(r.name,"Releasing",r.calling))
+      const key = `${r.name}|Releasing|${r.calling}`;
+      if(seen.has(key)) return;
+      if(!hasAppt(r.name,"Releasing",r.calling)) {
+        seen.add(key);
         toCreate.push({id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
           name:r.name,status:"Need to Schedule",owner:"Bishop",
           purpose:"Releasing",apptDate:"",notes:r.calling});
+      }
+    });
+
+    // Sustained callings → auto-create Set Apart appointment
+    callings.forEach(c=>{
+      if(c.stage!=="Sustained"||!c.name) return;
+      const key = `${c.name}|Set Apart|${c.calling}`;
+      if(seen.has(key)) return;
+      if(!hasAppt(c.name,"Set Apart",c.calling)) {
+        seen.add(key);
+        toCreate.push({id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+          name:c.name,status:"Need to Schedule",owner:"Bishop",
+          purpose:"Set Apart",apptDate:"",notes:c.calling});
+      }
     });
 
     if(toCreate.length===0) return;
 
-    // Fire toasts outside of setAppts to avoid React Strict Mode double-invoke
+    // Update ref immediately so a re-render doesn't create duplicates
+    apptRef.current = [...currentAppts, ...toCreate];
     toCreate.forEach(nc=>notify.info(`Appointment created for ${nc.name} (${nc.purpose})`));
-    setAppts(prev=>[...prev,...toCreate]);
+    setAppts(apptRef.current);
 
-  },[callings, releasings, appointments, hasPulled]);
+    // Push immediately so the new appointments are saved to the sheet
+    // before any tab close or re-login can lose them
+    clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(() => doPush(), 500);
+
+  },[callings, releasings, hasPulled, doPush]); // eslint-disable-line
 
   // ── Role: admin = in ALLOWED_EMAILS, limited = in WARD_COUNCIL_EMAILS ──
   // userEmail already declared above for isAdminRef
@@ -827,20 +865,20 @@ function MainApp({ user, token, onSignOut }) {
 
   const NAV_GROUPS = isAdmin ? [
     { id:"scheduling", label:"Scheduling", children:[
-      {id:"appointments", label:"Appointments", badge:appointments.filter(a=>a.status!=="Completed").length||null},
-      {id:"callings",     label:"Callings",     badge:callings.filter(c=>c.stage!=="Completed").length||null},
-      {id:"releasings",   label:"Releasings",   badge:releasings.filter(r=>r.stage!=="Completed").length||null},
+      {id:"appointments", label:"Appointments"},
+      {id:"callings",     label:"Callings"},
+      {id:"releasings",   label:"Releasings"},
     ]},
     { id:"meetings", label:"Meetings", children:[
-      {id:"bishopric",    label:"Bishopric Council", badge:null},
-      {id:"sacrament",    label:"Sacrament",         badge:null},
-      {id:"ward-council", label:"Ward Council",       badge:null},
+      {id:"bishopric",    label:"Bishopric Council"},
+      {id:"sacrament",    label:"Sacrament"},
+      {id:"ward-council", label:"Ward Council"},
     ]},
     { id:"calendar", label:"Calendar", flat:true },
     { id:"links",    label:"Links",    flat:true },
     { id:"admin", label:"Admin", children:[
-      {id:"alerts",  label:"Alerts",  badge:null},
-      {id:"members", label:"Members", badge:null},
+      {id:"alerts",  label:"Alerts"},
+      {id:"members", label:"Members"},
     ]},
   ] : [
     { id:"ward-council", label:"Ward Council", flat:true },
@@ -858,71 +896,96 @@ function MainApp({ user, token, onSignOut }) {
       <ToastStack/>
 
       {/* ── Header ── */}
-      <header style={{borderBottom:`1.5px solid ${C.border}`,padding:`0 ${isMobile?"16px":"28px"}`,display:"flex",alignItems:"center",justifyContent:"space-between",height:58,position:"sticky",top:0,zIndex:50,background:C.surfaceWhite,boxShadow:"0 1px 0 rgba(0,0,0,.04)"}}>
-        <div style={{display:"flex",alignItems:"center",gap:isMobile?12:24}}>
-          <div style={{display:"flex",alignItems:"baseline",gap:6}}>
-            <span style={{fontSize:isMobile?16:18,fontWeight:600,color:C.blue35}}>Ward</span>
-            <span style={{fontSize:isMobile?16:18,fontWeight:400,fontStyle:"italic",color:C.blue25}}>Manager</span>
-            {!isMobile && <span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textLight,marginLeft:4}}>{config.WARD_NAME}</span>}
+      <header style={{position:"sticky",top:0,zIndex:50,background:C.surfaceWhite,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+
+        {/* Row 1: Logo + Nav + Settings + User */}
+        <div style={{padding:`0 ${isMobile?"14px":"28px"}`,display:"flex",alignItems:"center",justifyContent:"space-between",height:52,borderBottom:`1px solid ${C.borderLight}`}}>
+          <div style={{display:"flex",alignItems:"center",gap:isMobile?10:20,minWidth:0}}>
+            <div style={{display:"flex",alignItems:"baseline",gap:5,flexShrink:0}}>
+              <span style={{fontSize:isMobile?15:17,fontWeight:600,color:C.blue35}}>Ward</span>
+              <span style={{fontSize:isMobile?15:17,fontWeight:400,fontStyle:"italic",color:C.blue25}}>Manager</span>
+              {!isMobile&&<span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textLight,marginLeft:3}}>{config.WARD_NAME}</span>}
+            </div>
+            {/* Nav — hidden on mobile (bottom tab bar) */}
+            {!isMobile && (
+              <nav style={{display:"flex",gap:1}}>
+                {NAV_GROUPS.map(group => (
+                  group.flat
+                    ? <button key={group.id} className="tab-btn" onClick={() => setTab(group.id)}
+                        style={{padding:"5px 12px",borderRadius:6,fontSize:13,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                          color:tab===group.id?C.blue35:C.textMuted,
+                          background:tab===group.id?"rgba(0,85,129,.07)":"transparent",
+                          borderBottom:`2.5px solid ${tab===group.id?C.blue35:"transparent"}`,
+                          fontWeight:tab===group.id?700:400,whiteSpace:"nowrap",border:"none",cursor:"pointer"}}>
+                        {group.label}
+                      </button>
+                    : <NavGroup key={group.id} group={group} activeTab={tab}
+                        isActiveGroup={activeGroup===group.id} onSelect={id=>setTab(id)}/>
+                ))}
+              </nav>
+            )}
           </div>
-          {/* Desktop/tablet nav — hidden on mobile (uses bottom tab bar instead) */}
-          {!isMobile && (
-            <nav style={{display:"flex",gap:2}}>
-              {NAV_GROUPS.map(group => (
-                group.flat
-                  ? <button key={group.id} className="tab-btn" onClick={() => setTab(group.id)}
-                      style={{
-                        padding:"5px 14px", borderRadius:6, fontSize:13,
-                        fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                        color: tab === group.id ? C.blue35 : C.textMuted,
-                        background: tab === group.id ? "rgba(0,85,129,.07)" : "transparent",
-                        borderBottom: `2.5px solid ${tab === group.id ? C.blue35 : "transparent"}`,
-                        fontWeight: tab === group.id ? 700 : 400,
-                      }}>
-                      {group.label}
-                    </button>
-                  : <NavGroup key={group.id}
-                      group={group}
-                      activeTab={tab}
-                      isActiveGroup={activeGroup===group.id}
-                      onSelect={id=>setTab(id)}
-                    />
-              ))}
-            </nav>
-          )}
+
+          {/* Right: Settings + User */}
+          <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+            {isAdmin&&<button onClick={()=>setShowSettings(true)} title="Settings"
+              style={{background:"none",border:`1.5px solid ${C.border}`,borderRadius:8,width:32,height:32,
+                cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:C.textMuted}}>
+              <Settings2 size={14}/>
+            </button>}
+            <div style={{display:"flex",alignItems:"center",gap:isMobile?4:7,padding:isMobile?"3px 7px":"3px 10px",
+              background:C.surfaceWarm,border:`1px solid ${C.border}`,borderRadius:20}}>
+              {user.picture?<img src={user.picture} alt="" style={{width:20,height:20,borderRadius:"50%"}}/>:<User size={14} color={C.textMuted}/>}
+              {!isMobile&&<span style={{fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>{user.name?.split(" ")[0]}</span>}
+              <button onClick={onSignOut} title="Sign out"
+                style={{background:"none",border:"none",color:C.textLight,cursor:"pointer",display:"flex",alignItems:"center"}}>
+                <LogOut size={12}/>
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div style={{display:"flex",alignItems:"center",gap:isMobile?6:8}}>
-          {/* Sync indicator — compact dot on mobile */}
-          {isMobile ? (
-            <div title={syncLabel} style={{width:8,height:8,borderRadius:"50%",background:isBusy?C.blue25:isErr?C.red15:C.green25,animation:isBusy?"pulse 1s infinite":"none",flexShrink:0}}/>
-          ) : (
-            <>
-              {/* Connection status */}
-              <div title={connMsg||"Click to test connection"} onClick={doTestConnection} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:C.surfaceWarm,border:`1px solid ${C.borderLight}`,cursor:"pointer",transition:"border .2s"}}>
-                <span style={{width:7,height:7,borderRadius:"50%",background:connColors[connStatus]||C.textLight,animation:connStatus==="testing"?"pulse 1s infinite":"none"}}/>
-                <span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>
-                  {connStatus==="unknown"?"Test":connStatus==="testing"?"Testing…":connStatus==="ok"?"Connected":connStatus==="warn"?"Check config":"Error"}
-                </span>
-              </div>
-              {/* Sync pill */}
-              <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:20,background:C.surfaceWarm,border:`1px solid ${isErr?C.red10:C.borderLight}`}}>
-                <span style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:isBusy?C.blue25:isErr?C.red15:C.green25,boxShadow:isBusy?"0 0 0 3px rgba(0,125,165,.2)":"none",animation:isBusy?"pulse 1s infinite":"none"}}/>
-                {syncLabel&&<span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:isErr?C.red15:C.textMuted,whiteSpace:"nowrap"}}>{syncLabel}</span>}
-              </div>
-              <button className="btn-secondary" onClick={pull} disabled={isBusy} style={{opacity:isBusy?.5:1,fontSize:11,padding:"6px 14px",display:"flex",alignItems:"center",gap:4}}><PullIcon/> Pull</button>
-              {isAdmin&&<button className="btn-primary" onClick={push} disabled={isBusy} style={{opacity:isBusy?.5:1,fontSize:11,padding:"6px 14px",display:"flex",alignItems:"center",gap:4}}><PushIcon/> Push</button>}
-            </>
-          )}
-
-          {/* Settings — admin only */}
-          {isAdmin&&<button onClick={()=>setShowSettings(true)} title="Settings" style={{background:"none",border:`1.5px solid ${C.border}`,borderRadius:8,width:34,height:34,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:C.textMuted}}><Settings2 size={15}/></button>}
-
-          {/* User chip */}
-          <div style={{display:"flex",alignItems:"center",gap:isMobile?4:8,padding:isMobile?"4px 8px":"4px 12px",background:C.surfaceWarm,border:`1px solid ${C.border}`,borderRadius:20}}>
-            {user.picture?<img src={user.picture} alt="" style={{width:22,height:22,borderRadius:"50%"}}/>:<User size={16} color={C.textMuted}/>}
-            {!isMobile && <span style={{fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>{user.name?.split(" ")[0]}</span>}
-            <button onClick={onSignOut} title="Sign out" style={{background:"none",border:"none",color:C.textLight,cursor:"pointer",display:"flex",alignItems:"center"}}><LogOut size={13}/></button>
+        {/* Row 2: Sync sub-bar — shown to all users */}
+        <div style={{padding:`0 ${isMobile?"14px":"28px"}`,height:30,display:"flex",alignItems:"center",
+          justifyContent:"space-between",background:C.surfaceWarm,borderBottom:`1px solid ${C.borderLight}`}}>
+          {/* Left: sync status */}
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{display:"flex",alignItems:"center",gap:5,cursor:"pointer"}} onClick={doTestConnection} title={connMsg||"Click to test connection"}>
+              <span style={{width:6,height:6,borderRadius:"50%",flexShrink:0,
+                background:connColors[connStatus]||C.textLight,
+                animation:connStatus==="testing"?"pulse 1s infinite":"none"}}/>
+              <span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>
+                {connStatus==="unknown"?"Not tested":connStatus==="testing"?"Testing…":connStatus==="ok"?"Connected":connStatus==="warn"?"Check config":"Error"}
+              </span>
+            </div>
+            <div style={{width:1,height:12,background:C.borderLight}}/>
+            <div style={{display:"flex",alignItems:"center",gap:5}}>
+              <span style={{width:6,height:6,borderRadius:"50%",flexShrink:0,
+                background:isBusy?C.blue25:isErr?C.red15:C.green25,
+                boxShadow:isBusy?"0 0 0 3px rgba(0,125,165,.18)":"none",
+                animation:isBusy?"pulse 1s infinite":"none"}}/>
+              <span style={{fontSize:10,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                color:isErr?C.red15:C.textMuted,whiteSpace:"nowrap"}}>
+                {syncLabel||"Up to date"}
+              </span>
+            </div>
+          </div>
+          {/* Right: Pull + Push */}
+          <div style={{display:"flex",alignItems:"center",gap:5}}>
+            <button onClick={pull} disabled={isBusy}
+              style={{opacity:isBusy?.5:1,fontSize:10,padding:"3px 10px",height:20,
+                display:"flex",alignItems:"center",gap:3,background:"none",
+                border:`1px solid ${C.border}`,borderRadius:4,cursor:"pointer",
+                fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textSecond,fontWeight:600}}>
+              <PullIcon/> Pull
+            </button>
+            {isAdmin&&<button onClick={push} disabled={isBusy}
+              style={{opacity:isBusy?.5:1,fontSize:10,padding:"3px 10px",height:20,
+                display:"flex",alignItems:"center",gap:3,
+                background:C.blue35,border:"none",borderRadius:4,cursor:"pointer",
+                fontFamily:"'Helvetica Neue',Arial,sans-serif",color:"#fff",fontWeight:600}}>
+              <PushIcon/> Push
+            </button>}
           </div>
         </div>
       </header>
@@ -930,7 +993,7 @@ function MainApp({ user, token, onSignOut }) {
 
 
       <main style={{padding:isMobile?"16px 12px 80px":"24px 28px",maxWidth:1440,margin:"0 auto"}}>
-        {isAdmin&&tab==="appointments"&&<AppointmentsTab data={appointments} setData={setAppts} roster={roster}/>}
+        {isAdmin&&tab==="appointments"&&<AppointmentsTab data={appointments} setData={setAppts} roster={roster} onDelete={async(updatedData)=>{ clearTimeout(pushTimer.current); apptRef.current=updatedData; await doPush(); }}/>}
         {isAdmin&&tab==="callings"    &&<PipelineTab title="Callings"   stages={CALLING_STAGES}   data={callings}   setData={setCallings}/>}
         {isAdmin&&tab==="releasings"  &&<PipelineTab title="Releasings" stages={RELEASING_STAGES} data={releasings} setData={setReleasings}/>}
         {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab}/>}
@@ -952,8 +1015,6 @@ function MainApp({ user, token, onSignOut }) {
             const isFlat = group.flat;
             const tabId = isFlat ? group.id : null;
             const isActive = isFlat ? tab === group.id : group.children?.some(c => c.id === tab);
-            const totalBadge = isFlat ? null : group.children?.reduce((s,c)=>s+(c.badge||0),0)||null;
-
             // Icon map for tab items
             const iconMap = {
               "ward-council": <ClipboardCheck size={20}/>,
@@ -992,13 +1053,7 @@ function MainApp({ user, token, onSignOut }) {
                   }
                 }}
                 style={{position:"relative"}}>
-                {totalBadge > 0 && (
-                  <span style={{position:"absolute",top:6,right:"calc(50% - 14px)",minWidth:16,height:16,
-                    borderRadius:8,background:C.gold20,color:"#fff",fontSize:9,fontWeight:700,
-                    display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px"}}>
-                    {totalBadge}
-                  </span>
-                )}
+
                 {icon}
                 <span>{group.label}</span>
                 {isActive && group.children && group.children.length > 1 && (
@@ -1016,7 +1071,7 @@ function MainApp({ user, token, onSignOut }) {
 }
 
 // ─── Appointments Tab ─────────────────────────────────────────────────────────
-function AppointmentsTab({data,setData,roster=[]}){
+function AppointmentsTab({data,setData,roster=[],onDelete}){
   const[stageFilters,setSF]=useState(APPT_STAGES.filter(s=>s!=="Completed"));
   const[ownerFilter,setOF]=useState("All");
   const[view,setView]=useState("table");
@@ -1032,7 +1087,14 @@ function AppointmentsTab({data,setData,roster=[]}){
     setSF2(false);setEditing(null);
   };
   const upd=(id,f,v)=>setData(d=>d.map(x=>x.id===id?{...x,[f]:v}:x));
-  const del=id=>{setData(d=>d.filter(x=>x.id!==id));notify.info("Appointment removed");};
+  const del=id=>{
+    // Compute the updated list synchronously so we can pass it to onDelete
+    const updated = data.filter(x=>x.id!==id);
+    setData(()=>updated);
+    notify.info("Appointment removed");
+    // Push immediately with the correct updated data — avoids apptRef timing gap
+    if(onDelete) onDelete(updated);
+  };
   const dragStatus=(id,status)=>{setData(d=>d.map(x=>x.id===id?{...x,status}:x));notify.success("Status updated");};
   const open=item=>{setEditing(item);setSF2(true);};
   const counts=APPT_STAGES.reduce((a,s)=>({...a,[s]:data.filter(x=>x.status===s).length}),{});
@@ -1100,7 +1162,22 @@ function ApptTable({data,onUpd,onDel,roster=[]}){
             <td style={{minWidth:158}}><StageChip status={a.status} onChange={v=>onUpd(a.id,"status",v)}/></td>
             <td style={{minWidth:152}}><OwnerChip owner={a.owner} onChange={v=>onUpd(a.id,"owner",v)} roster={roster}/></td>
             <td style={{minWidth:185}}><PurposeCell value={a.purpose} onChange={v=>onUpd(a.id,"purpose",v)}/></td>
-            <td style={{minWidth:126}}><input type="date" value={a.apptDate} onChange={e=>onUpd(a.id,"apptDate",e.target.value)} style={{background:"transparent",border:"none",outline:"none",cursor:"pointer",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:a.apptDate?C.textSecond:C.textLight,padding:0,width:"auto"}}/></td>
+            <td style={{minWidth:126}}>
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <input type="date" value={a.apptDate} onChange={e=>onUpd(a.id,"apptDate",e.target.value)}
+                  style={{background:"transparent",border:"none",outline:"none",cursor:"pointer",fontSize:12,
+                    fontFamily:"'Helvetica Neue',Arial,sans-serif",color:a.apptDate?C.textSecond:C.textLight,padding:0,width:"auto"}}/>
+                {a.apptDate && (
+                  <button onClick={()=>onUpd(a.id,"apptDate","")} title="Clear date"
+                    style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"2px",
+                      display:"flex",alignItems:"center",lineHeight:1,borderRadius:3}}
+                    onMouseEnter={e=>e.currentTarget.style.color=C.red15}
+                    onMouseLeave={e=>e.currentTarget.style.color=C.textLight}>
+                    <X size={11}/>
+                  </button>
+                )}
+              </div>
+            </td>
             <td style={{minWidth:165}}><InlineText serif value={a.notes} onChange={v=>onUpd(a.id,"notes",v)}/></td>
             <td style={{width:44,textAlign:"center"}}><button className="btn-del" onClick={()=>onDel(a.id)}><XIcon/></button></td>
           </tr>
@@ -3867,7 +3944,7 @@ function SettingsModal({token,onTestConn,connStatus,connMsg,roster,setRoster,onC
             {
               sheet: "Bishopric Sheet", color: C.blue35,
               tabs: [
-                {tab:"Appointments",     cols:"Name | Status | Owner | Purpose | Appt Date | Notes"},
+                {tab:"Appointments",     cols:"ID | Name | Status | Owner | Purpose | Appt Date | Notes"},
                 {tab:"Callings",         cols:"Calling | Name | Stage | Notes"},
                 {tab:"Releasings",       cols:"Calling | Name | Stage | Notes"},
                 {tab:"BishopricMeeting", cols:"Date | ItemKey | Assignee | Done | Notes | CustomLabel | SpiritualToggle"},
