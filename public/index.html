@@ -4,11 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0f1117" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>Ward Manager</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <script src="https://accounts.google.com/gsi/client"></script>
   </head>
   <body style="margin:0;background:#0f1117;">
     <div id="root"></div>
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/wardManager/sw.js')
+          .then(reg => {
+            // Check for updates every time the page loads
+            reg.update();
+            // When a new SW is waiting, reload to activate it
+            reg.addEventListener('updatefound', () => {
+              const newWorker = reg.installing;
+              newWorker.addEventListener('statechange', () => {
+                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  // New version available — reload to pick it up
+                  window.location.reload();
+                }
+              });
+            });
+          });
+      }
+    </script>
   </body>
 </html>
