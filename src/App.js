@@ -574,7 +574,7 @@ function MainApp({ user, token, onSignOut }) {
     wcmRef=useRef(wardCouncilMeeting),
     sacrRef=useRef(sacramentProgram),tabRef=useRef(tab),calendarRef=useRef(calendar),
     pulledRef=useRef(hasPulled),pushTimer=useRef(null),pushing=useRef(false),
-    autoApptGuard=useRef(null); // tracks last callings+releasings signature to prevent duplicate auto-appts
+    autoApptGuard=useRef(null); // unused — kept for safety
 
   useEffect(()=>{tokenRef.current=token;},[token]);
   useEffect(()=>{apptRef.current=appointments;},[appointments]);
@@ -664,6 +664,14 @@ function MainApp({ user, token, onSignOut }) {
           } catch(_) {}
         }
       } catch(e) { /* ward council sheet not yet configured */ }
+      // Auto-create appointments using freshly-pulled data (race-condition safe)
+      if(!silent && isAdminRef.current) {
+        await autoCreateAppointments(
+          d.appointments || [],
+          d.callings || [],
+          d.releasings || []
+        );
+      }
       setHasPulled(true); setLastSync(new Date()); setSyncError(null);
       if(!silent){ setSyncStatus("idle"); notify.success("Data pulled from Google Sheets"); }
       if(connStatus==="unknown") setConnStatus("ok");
@@ -761,85 +769,76 @@ function MainApp({ user, token, onSignOut }) {
     return()=>clearInterval(id);
   },[lastSyncedAt]);
 
-  // ── Auto-create appointments when a calling/releasing reaches Approved stage ──
-  useEffect(()=>{
-    if(!hasPulled) return;
+  // ── Auto-create appointments — runs inside doPull, not as a separate effect ──
+  // See autoCreateAppointments() called at the end of doPull.
+  // Using a useEffect caused multi-device/multi-tab race conditions where
+  // each device would independently create duplicates.
 
-    // Build a signature of the current callings+releasings data.
-    // If it matches the last run, skip — prevents React re-renders and
-    // Strict Mode double-invocation from creating duplicates.
-    const sig = JSON.stringify(
-      [...callings, ...releasings]
-        .filter(x => ["Approved to Call","Approved to Release","Sustained"].includes(x.stage) && x.name)
-        .map(x => `${x.name}|${x.stage}|${x.calling}`)
-        .sort()
-    );
-    if (autoApptGuard.current === sig) return;
-    autoApptGuard.current = sig;
-
-    // Use apptRef (not appointments state) to avoid this effect re-firing
-    // when setAppts updates appointments — apptRef stays current via its own useEffect
-    const currentAppts = apptRef.current || [];
-    const hasAppt=(name,purpose,calling)=>currentAppts.some(a=>
-      a.name.toLowerCase()===name.toLowerCase() &&
-      a.purpose===purpose &&
-      a.notes===calling &&
-      a.status!=="Completed"
+  // ── Auto-create appointments from freshly-pulled data ──
+  // Called directly inside doPull so it always uses real sheet data.
+  // This prevents multi-device race conditions — each pull is atomic.
+  const autoCreateAppointments = useCallback(async (freshAppts, freshCallings, freshReleasings) => {
+    if (!isAdminRef.current) return;
+    const hasAppt = (name, purpose, calling) => freshAppts.some(a =>
+      a.name.toLowerCase() === name.toLowerCase() &&
+      a.purpose === purpose &&
+      a.notes === calling &&
+      a.status !== "Completed"
     );
 
-    const toCreate=[];
-    const seen = new Set(); // guard against same-loop duplicates
+    const toCreate = [];
+    const seen = new Set();
 
-    callings.forEach(c=>{
-      if(c.stage!=="Approved to Call"||!c.name) return;
+    freshCallings.forEach(c => {
+      if (c.stage !== "Approved to Call" || !c.name) return;
       const key = `${c.name}|Calling|${c.calling}`;
-      if(seen.has(key)) return;
-      if(!hasAppt(c.name,"Calling",c.calling)) {
-        seen.add(key);
-        toCreate.push({id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
-          name:c.name,status:"Need to Schedule",owner:"Bishop",
-          purpose:"Calling",apptDate:"",notes:c.calling});
-      }
+      if (seen.has(key) || hasAppt(c.name, "Calling", c.calling)) return;
+      seen.add(key);
+      toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+        name:c.name, status:"Need to Schedule", owner:"Bishop",
+        purpose:"Calling", apptDate:"", notes:c.calling });
     });
 
-    releasings.forEach(r=>{
-      if(r.stage!=="Approved to Release"||!r.name) return;
+    freshReleasings.forEach(r => {
+      if (r.stage !== "Approved to Release" || !r.name) return;
       const key = `${r.name}|Releasing|${r.calling}`;
-      if(seen.has(key)) return;
-      if(!hasAppt(r.name,"Releasing",r.calling)) {
-        seen.add(key);
-        toCreate.push({id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
-          name:r.name,status:"Need to Schedule",owner:"Bishop",
-          purpose:"Releasing",apptDate:"",notes:r.calling});
-      }
+      if (seen.has(key) || hasAppt(r.name, "Releasing", r.calling)) return;
+      seen.add(key);
+      toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+        name:r.name, status:"Need to Schedule", owner:"Bishop",
+        purpose:"Releasing", apptDate:"", notes:r.calling });
     });
 
-    // Sustained callings → auto-create Set Apart appointment
-    callings.forEach(c=>{
-      if(c.stage!=="Sustained"||!c.name) return;
+    freshCallings.forEach(c => {
+      if (c.stage !== "Sustained" || !c.name) return;
       const key = `${c.name}|Set Apart|${c.calling}`;
-      if(seen.has(key)) return;
-      if(!hasAppt(c.name,"Set Apart",c.calling)) {
-        seen.add(key);
-        toCreate.push({id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
-          name:c.name,status:"Need to Schedule",owner:"Bishop",
-          purpose:"Set Apart",apptDate:"",notes:c.calling});
-      }
+      if (seen.has(key) || hasAppt(c.name, "Set Apart", c.calling)) return;
+      seen.add(key);
+      toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+        name:c.name, status:"Need to Schedule", owner:"Bishop",
+        purpose:"Set Apart", apptDate:"", notes:c.calling });
     });
 
-    if(toCreate.length===0) return;
+    if (toCreate.length === 0) return;
 
-    // Update ref immediately so a re-render doesn't create duplicates
-    apptRef.current = [...currentAppts, ...toCreate];
-    toCreate.forEach(nc=>notify.info(`Appointment created for ${nc.name} (${nc.purpose})`));
-    setAppts(apptRef.current);
+    const merged = [...freshAppts, ...toCreate];
+    apptRef.current = merged;
+    setAppts(merged);
+    toCreate.forEach(nc => notify.info(`Appointment created for ${nc.name} (${nc.purpose})`));
 
-    // Push immediately so the new appointments are saved to the sheet
-    // before any tab close or re-login can lose them
-    clearTimeout(pushTimer.current);
-    pushTimer.current = setTimeout(() => doPush(), 500);
-
-  },[callings, releasings, hasPulled, doPush]); // eslint-disable-line
+    // Push immediately — use merged data directly, not apptRef (avoids timing gap)
+    try {
+      const { pushAll } = await import("./sheets");
+      await pushAll(tokenRef.current, {
+        appointments: merged,
+        callings: callRef.current,
+        releasings: relRef.current,
+        members: membRef.current,
+      });
+    } catch(e) {
+      notify.error("Auto-appointment save failed: " + e.message);
+    }
+  }, []); // eslint-disable-line
 
   // ── Role: admin = in ALLOWED_EMAILS, limited = in WARD_COUNCIL_EMAILS ──
   // userEmail already declared above for isAdminRef
