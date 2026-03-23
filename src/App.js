@@ -3944,7 +3944,7 @@ function SettingsModal({token,onTestConn,connStatus,connMsg,roster,setRoster,onC
             {
               sheet: "Bishopric Sheet", color: C.blue35,
               tabs: [
-                {tab:"Appointments",     cols:"ID | Name | Status | Owner | Purpose | Appt Date | Notes"},
+                {tab:"Appointments",     cols:"Name | Status | Owner | Purpose | Appt Date | Notes"},
                 {tab:"Callings",         cols:"Calling | Name | Stage | Notes"},
                 {tab:"Releasings",       cols:"Calling | Name | Stage | Notes"},
                 {tab:"BishopricMeeting", cols:"Date | ItemKey | Assignee | Done | Notes | CustomLabel | SpiritualToggle"},
