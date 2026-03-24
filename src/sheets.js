@@ -25,6 +25,21 @@ async function sheetsReq(token, sheetId, range, method = "GET", body = null) {
 const bishopricReq = (token, range, method, body) => sheetsReq(token, SID(),  range, method, body);
 const sacramentReq = (token, range, method, body) => sheetsReq(token, SSID(), range, method, body);
 
+// Safe overwrite — pads with empty rows up to a safe max so old rows get blanked
+// Avoids the clear+write race condition where the sheet is briefly empty
+function padRows(values, minRows = 500) {
+  const cols = values[0]?.length || 1;
+  const empty = Array(cols).fill("");
+  const padded = [...values];
+  while (padded.length < minRows) padded.push(empty);
+  return padded;
+}
+
+async function clearAndWrite(token, sheetId, range, values) {
+  // Write data + blank padding rows — overwrites any stale rows without a separate clear step
+  return sheetsReq(token, sheetId, range, "PUT", { values: padRows(values) });
+}
+
 // Throttled sequential updates — avoids rate limits without needing batchUpdate scope
 async function sheetsBatchUpdate(token, sheetId, data) {
   if (!data || data.length === 0) return;
@@ -202,10 +217,11 @@ export async function pullSacrament(token) {
 }
 
 export async function pushAll(token, { appointments, callings, releasings, members }) {
+  const sid = SID();
   const ops = [
-    bishopricReq(token, "Appointments!A:F", "PUT", { values: appointmentsToRows(appointments) }),
-    bishopricReq(token, "Callings!A:D",     "PUT", { values: callingsToRows(callings) }),
-    bishopricReq(token, "Releasings!A:D",   "PUT", { values: callingsToRows(releasings) }),
+    clearAndWrite(token, sid, "Appointments!A:F", appointmentsToRows(appointments)),
+    clearAndWrite(token, sid, "Callings!A:D",     callingsToRows(callings)),
+    clearAndWrite(token, sid, "Releasings!A:D",   callingsToRows(releasings)),
   ];
   if (members !== undefined) ops.push(bishopricReq(token, "Members!A:E", "PUT", { values: membersToRows(members) }));
   await Promise.all(ops);

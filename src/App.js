@@ -574,7 +574,9 @@ function MainApp({ user, token, onSignOut }) {
     wcmRef=useRef(wardCouncilMeeting),
     sacrRef=useRef(sacramentProgram),tabRef=useRef(tab),calendarRef=useRef(calendar),
     pulledRef=useRef(hasPulled),pushTimer=useRef(null),pushing=useRef(false),
-    autoApptGuard=useRef(null); // unused — kept for safety
+    autoApptGuard=useRef(null), // stores last-processed callings+releasings signature
+    pipelineDirty=useRef(false),    // true when callings/releasings have unsaved local changes
+    appointmentsDirty=useRef(false); // true when appointments have unsaved local changes
 
   useEffect(()=>{tokenRef.current=token;},[token]);
   useEffect(()=>{apptRef.current=appointments;},[appointments]);
@@ -619,11 +621,13 @@ function MainApp({ user, token, onSignOut }) {
           // Lightweight: only appointments/callings/releasings (3 calls)
           const { sheetsLightPull } = await import("./sheets");
           const d = await sheetsLightPull(tokenRef.current);
-          setAppts(d.appointments); setCallings(d.callings); setReleasings(d.releasings);
+          if(!appointmentsDirty.current) setAppts(d.appointments);
+          if(!pipelineDirty.current){ setCallings(d.callings); setReleasings(d.releasings); }
         } else {
           const d = await pullAll(tokenRef.current);
-          setAppts(d.appointments); setCallings(d.callings);
-          setReleasings(d.releasings); setBishopricMeeting(d.bishopricMeeting||[]);
+          if(!appointmentsDirty.current) setAppts(d.appointments);
+          if(!pipelineDirty.current){ setCallings(d.callings); setReleasings(d.releasings); }
+          setBishopricMeeting(d.bishopricMeeting||[]);
           if(d.members) setMembers(d.members);
           if(d.roster) setRoster(d.roster);
           // Sacrament (non-blocking)
@@ -664,14 +668,7 @@ function MainApp({ user, token, onSignOut }) {
           } catch(_) {}
         }
       } catch(e) { /* ward council sheet not yet configured */ }
-      // Auto-create appointments using freshly-pulled data (race-condition safe)
-      if(!silent && isAdminRef.current) {
-        await autoCreateAppointments(
-          d.appointments || [],
-          d.callings || [],
-          d.releasings || []
-        );
-      }
+      // Appointments are auto-created on stage change only (see PipelineTab setStage)
       setHasPulled(true); setLastSync(new Date()); setSyncError(null);
       if(!silent){ setSyncStatus("idle"); notify.success("Data pulled from Google Sheets"); }
       if(connStatus==="unknown") setConnStatus("ok");
@@ -821,24 +818,15 @@ function MainApp({ user, token, onSignOut }) {
 
     if (toCreate.length === 0) return;
 
-    const merged = [...freshAppts, ...toCreate];
-    apptRef.current = merged;
-    setAppts(merged);
+    // Update ref and state
+    apptRef.current = [...freshAppts, ...toCreate];
+    setAppts(apptRef.current);
     toCreate.forEach(nc => notify.info(`Appointment created for ${nc.name} (${nc.purpose})`));
 
-    // Push immediately — use merged data directly, not apptRef (avoids timing gap)
-    try {
-      const { pushAll } = await import("./sheets");
-      await pushAll(tokenRef.current, {
-        appointments: merged,
-        callings: callRef.current,
-        releasings: relRef.current,
-        members: membRef.current,
-      });
-    } catch(e) {
-      notify.error("Auto-appointment save failed: " + e.message);
-    }
-  }, []); // eslint-disable-line
+    // Schedule push via normal doPush — respects pushing.current guard and shows sync status
+    clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(() => doPush(), 300);
+  }, [doPush]); // eslint-disable-line
 
   // ── Role: admin = in ALLOWED_EMAILS, limited = in WARD_COUNCIL_EMAILS ──
   // userEmail already declared above for isAdminRef
@@ -992,9 +980,51 @@ function MainApp({ user, token, onSignOut }) {
 
 
       <main style={{padding:isMobile?"16px 12px 80px":"24px 28px",maxWidth:1440,margin:"0 auto"}}>
-        {isAdmin&&tab==="appointments"&&<AppointmentsTab data={appointments} setData={setAppts} roster={roster} onDelete={async(updatedData)=>{ clearTimeout(pushTimer.current); apptRef.current=updatedData; await doPush(); }}/>}
-        {isAdmin&&tab==="callings"    &&<PipelineTab title="Callings"   stages={CALLING_STAGES}   data={callings}   setData={setCallings}/>}
-        {isAdmin&&tab==="releasings"  &&<PipelineTab title="Releasings" stages={RELEASING_STAGES} data={releasings} setData={setReleasings}/>}
+        {isAdmin&&tab==="appointments"&&<AppointmentsTab data={appointments} setData={setAppts} roster={roster} onDelete={async(updatedData)=>{
+            apptRef.current=updatedData;
+            appointmentsDirty.current=true;
+            try {
+              const {pushAll}=await import("./sheets");
+              await pushAll(tokenRef.current,{appointments:updatedData,callings:callRef.current,releasings:relRef.current,members:membRef.current});
+              setSyncStatus("idle");
+            } catch(e){ notify.error("Save failed: "+e.message,6000); }
+            finally { appointmentsDirty.current=false; }
+          }}/>}
+        {isAdmin&&tab==="callings"    &&<PipelineTab title="Callings"   stages={CALLING_STAGES}   data={callings}   setData={setCallings}   onStageChange={(item,stage)=>autoCreateAppointments(apptRef.current||[],[...callings.map(c=>c.id===item.id?{...c,stage}:c)],relRef.current||[])} onMutate={async(updated)=>{
+            callRef.current=updated;
+            pipelineDirty.current=true;
+            try {
+              if(!tokenRef.current) throw new Error("No auth token");
+              const {callingsToRows}=await import("./sheets");
+              const rows = callingsToRows(updated);
+              console.log("[onMutate callings] pushing", updated.length, "rows:", updated.map(c=>c.name));
+              console.log("[onMutate callings] SID=", callRef.current?.length, "token present:", !!tokenRef.current);
+              // Push directly via fetch so we can see the raw response
+              const {default: config} = await import("./config");
+              const sid = config.SPREADSHEET_ID;
+              const url = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/${encodeURIComponent("Callings!A:D")}?valueInputOption=USER_ENTERED`;
+              const res = await fetch(url, {
+                method: "PUT",
+                headers: { Authorization: `Bearer ${tokenRef.current}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ values: rows }),
+              });
+              const json = await res.json();
+              console.log("[onMutate callings] PUT response:", res.status, JSON.stringify(json).slice(0,200));
+              if(!res.ok) throw new Error(`Sheets API ${res.status}: ${JSON.stringify(json)}`);
+              setSyncStatus("idle");
+            } catch(e){ console.error("[onMutate callings] FAILED:", e); notify.error("Save failed: "+e.message,6000); }
+            finally { pipelineDirty.current=false; }
+          }}/>}
+        {isAdmin&&tab==="releasings"  &&<PipelineTab title="Releasings" stages={RELEASING_STAGES} data={releasings} setData={setReleasings} onStageChange={(item,stage)=>autoCreateAppointments(apptRef.current||[],callRef.current||[],[...releasings.map(r=>r.id===item.id?{...r,stage}:r)])} onMutate={async(updated)=>{
+            relRef.current=updated;
+            pipelineDirty.current=true;
+            try {
+              const {pushAll}=await import("./sheets");
+              await pushAll(tokenRef.current,{appointments:apptRef.current,callings:callRef.current,releasings:updated,members:membRef.current});
+              setSyncStatus("idle");
+            } catch(e){ notify.error("Save failed: "+e.message,6000); }
+            finally { pipelineDirty.current=false; }
+          }}/>}
         {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab}/>}
         {isAdmin&&tab==="members"     &&<MembersTab  data={members}  setData={setMembers} callings={callings} releasings={releasings}/>}
         {isAdmin&&tab==="alerts"      &&<AlertsTab appointments={appointments} callings={callings} releasings={releasings} isMobile={isMobile}/>}
@@ -1274,19 +1304,35 @@ function AppointmentModal({item,onSave,onClose,roster=[]}){
 }
 
 // ─── Pipeline Tab (Callings & Releasings) ────────────────────────────────────
-function PipelineTab({title,stages,data,setData}){
+function PipelineTab({title,stages,data,setData,onStageChange,onMutate}){
   const[view,setView]=useState("kanban");const[search,setSrch]=useState("");
   const[showForm,setSF]=useState(false);const[editing,setEditing]=useState(null);
   const filtered=data.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.calling.toLowerCase().includes(search.toLowerCase()));
   const save=item=>{
-    if(item.id){setData(d=>d.map(x=>x.id===item.id?item:x));notify.success(`${title.slice(0,-1)} updated`);}
-    else{setData(d=>[...d,{...item,id:`p_${Date.now()}`}]);notify.success(`${title.slice(0,-1)} added`);}
+    let updated;
+    if(item.id){updated=data.map(x=>x.id===item.id?item:x);setData(()=>updated);notify.success(`${title.slice(0,-1)} updated`);}
+    else{updated=[...data,{...item,id:`p_${Date.now()}`}];setData(()=>updated);notify.success(`${title.slice(0,-1)} added`);}
     setSF(false);setEditing(null);
+    if(onMutate) onMutate(updated);
   };
-  const del=id=>{setData(d=>d.filter(x=>x.id!==id));notify.info("Record removed");};
+  const del=id=>{
+    const updated=data.filter(x=>x.id!==id);
+    setData(()=>updated);
+    notify.info("Record removed");
+    if(onMutate) onMutate(updated);
+  };
   const open=item=>{setEditing(item);setSF(true);};
-  const setStage=(id,stage)=>setData(d=>d.map(x=>x.id===id?{...x,stage}:x));
-  const dragStage=(id,stage)=>{setData(d=>d.map(x=>x.id===id?{...x,stage}:x));notify.success("Stage updated");};
+  const setStage=(id,stage)=>{
+    setData(d=>d.map(x=>x.id===id?{...x,stage}:x));
+    const item=data.find(x=>x.id===id);
+    if(item && onStageChange) onStageChange(item, stage);
+  };
+  const dragStage=(id,stage)=>{
+    setData(d=>d.map(x=>x.id===id?{...x,stage}:x));
+    notify.success("Stage updated");
+    const item=data.find(x=>x.id===id);
+    if(item && onStageChange) onStageChange(item, stage);
+  };
   const move=(id,dir)=>setData(d=>d.map(x=>{if(x.id!==id)return x;const i=stages.indexOf(x.stage);return stages[i+dir]?{...x,stage:stages[i+dir]}:x;}));
   const counts=stages.reduce((a,s)=>({...a,[s]:data.filter(x=>x.stage===s).length}),{});
   const active=data.filter(x=>x.stage!=="Completed").length;
@@ -1319,15 +1365,15 @@ function PipelineTab({title,stages,data,setData}){
         <input value={search} onChange={e=>setSrch(e.target.value)} placeholder="Search name or calling…" style={{maxWidth:300}}/>
       </div>
 
-      {view==="kanban"?<PipelineKanban data={filtered} stages={stages} onEdit={open} onMove={move} onStageChange={dragStage}/>
+      {view==="kanban"?<PipelineKanban data={filtered} stages={stages} onEdit={open} onMove={move} onStageChange={dragStage} onDel={del}/>
         :<PipelineTable data={filtered} stages={stages} onEdit={open} onDel={del} onStage={setStage}/>}
 
-      {showForm&&<PipelineModal item={editing} stages={stages} title={title.slice(0,-1)} onSave={save} onClose={()=>{setSF(false);setEditing(null);}}/>}
+      {showForm&&<PipelineModal item={editing} stages={stages} title={title.slice(0,-1)} onSave={save} onDelete={del} onClose={()=>{setSF(false);setEditing(null);}}/>}
     </div>
   );
 }
 
-function PipelineKanban({data,stages,onEdit,onMove,onStageChange}){
+function PipelineKanban({data,stages,onEdit,onMove,onStageChange,onDel}){
   const[dragging,setDragging]=useState(null);
   const[dragOver,setDragOver]=useState(null);
   const onDragStart=(e,item)=>{setDragging(item);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",item.id);};
@@ -1360,9 +1406,16 @@ function PipelineKanban({data,stages,onEdit,onMove,onStageChange}){
               </div>
               <div style={{fontSize:12,color:C.blue25,fontStyle:"italic",fontFamily:"Georgia,serif",marginBottom:c.notes?8:4}}>{c.calling}</div>
               {c.notes&&<div style={{fontSize:11,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",paddingTop:6,borderTop:`1px solid ${C.borderLight}`,lineHeight:1.5,marginBottom:6}}>{c.notes}</div>}
-              <div style={{display:"flex",gap:4,justifyContent:"flex-end",marginTop:4}}>
-                <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id,-1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move left"><ChevLeftIcon/></button>
-                <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id, 1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move right"><ChevRightIcon/></button>
+              <div style={{display:"flex",gap:4,justifyContent:"space-between",alignItems:"center",marginTop:4}}>
+                <div style={{display:"flex",gap:4}}>
+                  <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id,-1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move left"><ChevLeftIcon/></button>
+                  <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id, 1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move right"><ChevRightIcon/></button>
+                </div>
+                <button onClick={e=>{e.stopPropagation();onDel(c.id);}} style={{background:"none",border:`1px solid ${C.borderLight}`,borderRadius:5,width:26,height:26,cursor:"pointer",color:C.textLight,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=C.red15;e.currentTarget.style.color=C.red15;}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor=C.borderLight;e.currentTarget.style.color=C.textLight;}}>
+                  <X size={11}/>
+                </button>
               </div>
             </div>
           ))}
@@ -1402,9 +1455,10 @@ function PipelineTable({data,stages,onEdit,onDel,onStage}){
   </div>;
 }
 
-function PipelineModal({item,stages,title,onSave,onClose}){
+function PipelineModal({item,stages,title,onSave,onClose,onDelete}){
   const[f,setF]=useState(item||{calling:"",name:"",stage:stages[0],notes:""});
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
+  const isExisting = !!(item?.id);
   return<ModalShell onClose={onClose} title={f.name||f.calling||`New ${title}`} subtitle={`${item?"Edit":"New"} ${title}`}>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
       <FormRow label="Calling / Position" full><input value={f.calling} onChange={e=>s("calling",e.target.value)} placeholder="e.g. Primary President"/></FormRow>
@@ -1412,7 +1466,17 @@ function PipelineModal({item,stages,title,onSave,onClose}){
       <FormRow label="Stage" full><select value={f.stage} onChange={e=>s("stage",e.target.value)}>{stages.map(x=><option key={x}>{x}</option>)}</select></FormRow>
       <FormRow label="Notes" full><textarea rows={3} value={f.notes} onChange={e=>s("notes",e.target.value)} style={{resize:"vertical"}}/></FormRow>
     </div>
-    <ModalFooter onClose={onClose} onSave={()=>onSave(f)} saveLabel={`Save ${title}`}/>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:24}}>
+      {isExisting && onDelete ? (
+        <button onClick={()=>{onDelete(item.id);onClose();}}
+          style={{background:"none",border:`1.5px solid ${C.red15}`,color:C.red15,borderRadius:8,
+            padding:"8px 16px",fontSize:13,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+            fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+          <X size={13}/> Delete
+        </button>
+      ) : <div/>}
+      <ModalFooter onClose={onClose} onSave={()=>onSave(f)} saveLabel={`Save ${title}`} inline/>
+    </div>
   </ModalShell>;
 }
 
