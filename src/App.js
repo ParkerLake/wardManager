@@ -503,21 +503,6 @@ function NavGroup({ group, activeTab, isActiveGroup, onSelect, compact=false }) 
   );
 }
 
-// ─── Root ──────────────────────────────────────────────────────────────────────
-export default function App() {
-  const { user, token, error, loading, stage, pendingEmail, submitEmail, googleSignIn, signOut } = useAuth();
-  if (!user || stage !== "done") return (
-    <LoginScreen
-      stage={stage}
-      pendingEmail={pendingEmail}
-      onSubmitEmail={submitEmail}
-      onGoogleSignIn={googleSignIn}
-      error={error}
-      loading={loading}
-    />
-  );
-  return <MainApp user={user} token={token} onSignOut={signOut}/>;
-}
 
 function LoginScreen({ stage, pendingEmail, onSubmitEmail, onGoogleSignIn, error, loading }) {
   const [email, setEmail] = useState(pendingEmail || "");
@@ -595,31 +580,6 @@ function LoginScreen({ stage, pendingEmail, onSubmitEmail, onGoogleSignIn, error
           marginTop:20, lineHeight:1.5 }}>
           Access restricted to authorised ward members.
         </div>
-      </div>
-    </div>
-  );
-}) {
-  return (
-    <div style={{minHeight:"100vh",background:C.pageBg,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"Georgia,serif"}}>
-      <style>{CSS}</style>
-      <div className="animate-in" style={{textAlign:"center",maxWidth:400,padding:32}}>
-        <div style={{width:72,height:72,borderRadius:20,margin:"0 auto 24px",
-          background:`linear-gradient(135deg,${C.blue35},${C.blue25})`,
-          display:"flex",alignItems:"center",justifyContent:"center",
-          position:"relative",overflow:"hidden",boxShadow:"0 8px 32px rgba(0,85,129,.25)"}}>
-          <div style={{position:"absolute",top:"-20%",right:"-10%",width:"70%",height:"160%",background:"linear-gradient(240deg,rgba(255,255,255,.18) 0%,transparent 55%)",pointerEvents:"none"}}/>
-          <Building2 size={32} style={{color:"#fff",position:"relative"}}/>
-        </div>
-        <h1 style={{fontSize:32,fontWeight:300,color:C.textPrimary,marginBottom:4}}>
-          Ward <span style={{fontStyle:"italic",color:C.blue35}}>Manager</span>
-        </h1>
-        <p style={{fontSize:13,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginBottom:6}}>{config.WARD_NAME}</p>
-        <p style={{fontSize:13,color:C.textSecond,marginBottom:32,lineHeight:1.6}}>Sign in with your authorised Google account to continue.</p>
-        {error && <div style={{background:"#FEF0F4",border:"1px solid #FC4E6D",borderRadius:8,padding:"12px 16px",marginBottom:20,fontSize:13,color:"#BD0057",fontFamily:"'Helvetica Neue',Arial,sans-serif",lineHeight:1.6}}>{error}</div>}
-        <button onClick={onSignIn} disabled={loading} className="btn-primary"
-          style={{width:"100%",justifyContent:"center",fontSize:15,padding:"13px 24px",borderRadius:10}}>
-          {loading?"Signing in…":"Sign in with Google"}
-        </button>
       </div>
     </div>
   );
@@ -5040,3 +5000,20 @@ function ChevLeftIcon(){return<ChevronLeft size={14}/>;}
 function ChevRightIcon(){return<ChevronRight size={14}/>;}
 function PullIcon(){return<RefreshCw size={11}/>;}
 function PushIcon(){return<Save size={11}/>;}
+
+
+// ─── Root ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  const { user, token, error, loading, stage, pendingEmail, submitEmail, googleSignIn, signOut } = useAuth();
+  if (!user || stage !== "done") return (
+    <LoginScreen
+      stage={stage}
+      pendingEmail={pendingEmail}
+      onSubmitEmail={submitEmail}
+      onGoogleSignIn={googleSignIn}
+      error={error}
+      loading={loading}
+    />
+  );
+  return <MainApp user={user} token={token} onSignOut={signOut}/>;
+}
