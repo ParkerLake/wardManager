@@ -505,12 +505,100 @@ function NavGroup({ group, activeTab, isActiveGroup, onSelect, compact=false }) 
 
 // ─── Root ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const { user, token, error, loading, signIn, signOut } = useAuth();
-  if (!user) return <LoginScreen onSignIn={signIn} error={error} loading={loading}/>;
+  const { user, token, error, loading, stage, pendingEmail, submitEmail, googleSignIn, signOut } = useAuth();
+  if (!user || stage !== "done") return (
+    <LoginScreen
+      stage={stage}
+      pendingEmail={pendingEmail}
+      onSubmitEmail={submitEmail}
+      onGoogleSignIn={googleSignIn}
+      error={error}
+      loading={loading}
+    />
+  );
   return <MainApp user={user} token={token} onSignOut={signOut}/>;
 }
 
-function LoginScreen({ onSignIn, error, loading }) {
+function LoginScreen({ stage, pendingEmail, onSubmitEmail, onGoogleSignIn, error, loading }) {
+  const [email, setEmail] = useState(pendingEmail || "");
+  const handleSubmit = () => onSubmitEmail(email);
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+      minHeight:"100vh", background:C.pageBg, padding:24 }}>
+      <div style={{ background:C.surfaceWhite, borderRadius:16, padding:"40px 48px", maxWidth:400,
+        width:"100%", boxShadow:"0 8px 40px rgba(0,48,87,.12)", textAlign:"center" }}>
+        <div style={{ fontFamily:"Georgia,serif", fontSize:26, fontWeight:600, color:C.blue35, marginBottom:4 }}>
+          Ward Manager
+        </div>
+        <div style={{ fontSize:13, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif", marginBottom:32 }}>
+          {config.WARD_NAME}
+        </div>
+
+        {error && (
+          <div style={{ background:"#FEF0F4", border:`1px solid ${C.red15}`, borderRadius:8,
+            padding:"10px 14px", marginBottom:20, fontSize:13, color:"#BD0057",
+            fontFamily:"'Helvetica Neue',Arial,sans-serif", textAlign:"left" }}>
+            {error}
+          </div>
+        )}
+
+        {(stage === "email_entry" || stage === "acquiring") && (
+          <div>
+            <div style={{ marginBottom:16, textAlign:"left" }}>
+              <label style={{ display:"block", fontSize:11, fontWeight:700, letterSpacing:".06em",
+                textTransform:"uppercase", color:C.textMuted,
+                fontFamily:"'Helvetica Neue',Arial,sans-serif", marginBottom:6 }}>
+                Email Address
+              </label>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleSubmit()}
+                placeholder="your@email.com" autoFocus disabled={loading}
+                style={{ width:"100%", padding:"10px 14px", fontSize:14, borderRadius:8,
+                  border:`1.5px solid ${C.border}`, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                  boxSizing:"border-box", outline:"none" }}/>
+            </div>
+            <button onClick={handleSubmit} disabled={loading || !email.trim()}
+              style={{ width:"100%", padding:"12px 24px", background:C.blue35, color:"#fff",
+                border:"none", borderRadius:10, fontSize:15,
+                fontFamily:"'Helvetica Neue',Arial,sans-serif", fontWeight:600,
+                cursor:loading||!email.trim()?"not-allowed":"pointer",
+                opacity:loading||!email.trim()?.6:1 }}>
+              {loading ? "Checking…" : "Continue"}
+            </button>
+          </div>
+        )}
+
+        {stage === "needs_google" && (
+          <div>
+            <div style={{ fontSize:13, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+              marginBottom:20, lineHeight:1.6 }}>
+              One more step — tap below to connect your Google account so we can load your ward data.
+            </div>
+            <button onClick={onGoogleSignIn} disabled={loading}
+              style={{ width:"100%", padding:"12px 24px", background:C.blue35, color:"#fff",
+                border:"none", borderRadius:10, fontSize:15,
+                fontFamily:"'Helvetica Neue',Arial,sans-serif", fontWeight:600,
+                cursor:loading?"not-allowed":"pointer", opacity:loading?.6:1,
+                display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}>
+              {loading ? "Connecting…" : "Connect Google Account"}
+            </button>
+            <button onClick={() => window.location.reload()}
+              style={{ marginTop:10, background:"none", border:"none", cursor:"pointer",
+                fontSize:12, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif" }}>
+              ← Use a different email
+            </button>
+          </div>
+        )}
+
+        <div style={{ fontSize:11, color:C.textLight, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+          marginTop:20, lineHeight:1.5 }}>
+          Access restricted to authorised ward members.
+        </div>
+      </div>
+    </div>
+  );
+}) {
   return (
     <div style={{minHeight:"100vh",background:C.pageBg,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"Georgia,serif"}}>
       <style>{CSS}</style>
