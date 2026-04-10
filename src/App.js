@@ -504,8 +504,8 @@ function NavGroup({ group, activeTab, isActiveGroup, onSelect, compact=false }) 
 }
 
 
-function LoginScreen({ stage, pendingEmail, onSubmitEmail, onGoogleSignIn, error, loading }) {
-  const [email, setEmail] = useState(pendingEmail || "");
+function LoginScreen({ onSubmitEmail, error }) {
+  const [email, setEmail] = useState("");
   const handleSubmit = () => onSubmitEmail(email);
 
   return (
@@ -528,8 +528,7 @@ function LoginScreen({ stage, pendingEmail, onSubmitEmail, onGoogleSignIn, error
           </div>
         )}
 
-        {(stage === "email_entry" || stage === "acquiring") && (
-          <div>
+        <div>
             <div style={{ marginBottom:16, textAlign:"left" }}>
               <label style={{ display:"block", fontSize:11, fontWeight:700, letterSpacing:".06em",
                 textTransform:"uppercase", color:C.textMuted,
@@ -538,43 +537,20 @@ function LoginScreen({ stage, pendingEmail, onSubmitEmail, onGoogleSignIn, error
               </label>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && handleSubmit()}
-                placeholder="your@email.com" autoFocus disabled={loading}
+                placeholder="your@email.com" autoFocus
                 style={{ width:"100%", padding:"10px 14px", fontSize:14, borderRadius:8,
                   border:`1.5px solid ${C.border}`, fontFamily:"'Helvetica Neue',Arial,sans-serif",
                   boxSizing:"border-box", outline:"none" }}/>
             </div>
-            <button onClick={handleSubmit} disabled={loading || !email.trim()}
+            <button onClick={handleSubmit} disabled={!email.trim()}
               style={{ width:"100%", padding:"12px 24px", background:C.blue35, color:"#fff",
                 border:"none", borderRadius:10, fontSize:15,
                 fontFamily:"'Helvetica Neue',Arial,sans-serif", fontWeight:600,
-                cursor:loading||!email.trim()?"not-allowed":"pointer",
-                opacity:loading||!email.trim()?.6:1 }}>
-              {loading ? "Checking…" : "Continue"}
+                cursor:!email.trim()?"not-allowed":"pointer",
+                opacity:!email.trim()?.6:1 }}>
+              Continue
             </button>
           </div>
-        )}
-
-        {stage === "needs_google" && (
-          <div>
-            <div style={{ fontSize:13, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif",
-              marginBottom:20, lineHeight:1.6 }}>
-              One more step — tap below to connect your Google account so we can load your ward data.
-            </div>
-            <button onClick={onGoogleSignIn} disabled={loading}
-              style={{ width:"100%", padding:"12px 24px", background:C.blue35, color:"#fff",
-                border:"none", borderRadius:10, fontSize:15,
-                fontFamily:"'Helvetica Neue',Arial,sans-serif", fontWeight:600,
-                cursor:loading?"not-allowed":"pointer", opacity:loading?.6:1,
-                display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}>
-              {loading ? "Connecting…" : "Connect Google Account"}
-            </button>
-            <button onClick={() => window.location.reload()}
-              style={{ marginTop:10, background:"none", border:"none", cursor:"pointer",
-                fontSize:12, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif" }}>
-              ← Use a different email
-            </button>
-          </div>
-        )}
 
         <div style={{ fontSize:11, color:C.textLight, fontFamily:"'Helvetica Neue',Arial,sans-serif",
           marginTop:20, lineHeight:1.5 }}>
@@ -586,7 +562,7 @@ function LoginScreen({ stage, pendingEmail, onSubmitEmail, onGoogleSignIn, error
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
-function MainApp({ user, token, onSignOut }) {
+function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, googleLoading=false }) {
   const windowWidth = useWindowWidth();
   const isMobile  = windowWidth < 1024;  // everything below laptop gets bottom tab bar
   const isTablet  = false;               // unused — single breakpoint approach
@@ -1027,6 +1003,19 @@ function MainApp({ user, token, onSignOut }) {
 
 
 
+      {needsGoogle && (
+        <div style={{ background:"#FEF8ED", borderBottom:"1px solid #C1A01E",
+          padding:"10px 20px", display:"flex", alignItems:"center", justifyContent:"space-between",
+          gap:12, fontSize:13, fontFamily:"'Helvetica Neue',Arial,sans-serif" }}>
+          <span style={{ color:"#7a5c00" }}>Connect your Google account to load ward data.</span>
+          <button onClick={onGoogleSignIn} disabled={googleLoading}
+            style={{ background:C.blue35, color:"#fff", border:"none", borderRadius:6,
+              padding:"6px 14px", fontSize:12, fontWeight:600, cursor:"pointer",
+              opacity:googleLoading?.6:1, whiteSpace:"nowrap" }}>
+            {googleLoading ? "Connecting…" : "Connect Google"}
+          </button>
+        </div>
+      )}
       <main style={{padding:isMobile?"16px 12px 80px":"24px 28px",maxWidth:1440,margin:"0 auto"}}>
         {isAdmin&&tab==="appointments"&&<AppointmentsTab data={appointments} setData={setAppts} roster={roster} onDelete={async(updatedData)=>{
             apptRef.current=updatedData;
@@ -5004,16 +4993,11 @@ function PushIcon(){return<Save size={11}/>;}
 
 // ─── Root ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const { user, token, error, loading, stage, pendingEmail, submitEmail, googleSignIn, signOut } = useAuth();
-  if (!user || stage !== "done") return (
-    <LoginScreen
-      stage={stage}
-      pendingEmail={pendingEmail}
-      onSubmitEmail={submitEmail}
-      onGoogleSignIn={googleSignIn}
-      error={error}
-      loading={loading}
-    />
+  const { user, token, error, loading, stage, submitEmail, googleSignIn, signOut } = useAuth();
+  // Email gate — only block here, never for Google auth
+  if (!user || stage === "email_entry") return (
+    <LoginScreen onSubmitEmail={submitEmail} error={error}/>
   );
-  return <MainApp user={user} token={token} onSignOut={signOut}/>;
+  // User is in — show the app. If needs_google, show a banner but don't block.
+  return <MainApp user={user} token={token} onSignOut={signOut} needsGoogle={stage==="needs_google"} onGoogleSignIn={googleSignIn} googleLoading={loading}/>;
 }

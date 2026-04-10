@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import config from "./config";
 
-const TOKEN_KEY   = "ward_gtoken";
-const USER_KEY    = "ward_guser";
-const SCOPES      = "https://www.googleapis.com/auth/spreadsheets email profile openid";
+const TOKEN_KEY  = "ward_gtoken";
+const USER_KEY   = "ward_guser";
+const SCOPES     = "https://www.googleapis.com/auth/spreadsheets";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -14,71 +14,33 @@ function getAllowedEmails() {
   ].map(e => e.toLowerCase());
 }
 
-function isEmailAllowed(email) {
-  return getAllowedEmails().includes(email.toLowerCase().trim());
-}
-
-function saveSession(token, userData) {
-  localStorage.setItem(TOKEN_KEY, token);
-  localStorage.setItem(USER_KEY, JSON.stringify(userData));
-}
-
 function loadSession() {
   try {
     const u = JSON.parse(localStorage.getItem(USER_KEY));
-    if (!u || !u.expiresAt) return null;
-    if (Date.now() > u.expiresAt) {
-      localStorage.removeItem(USER_KEY);
-      localStorage.removeItem(TOKEN_KEY);
-      return null;
-    }
-    return { user: u, token: localStorage.getItem(TOKEN_KEY) };
+    if (!u) return null;
+    const token = localStorage.getItem(TOKEN_KEY);
+    const tokenExpiry = parseInt(localStorage.getItem(TOKEN_KEY + "_expiry") || "0");
+    return {
+      user: u,
+      token: Date.now() < tokenExpiry ? token : null,
+    };
   } catch { return null; }
 }
 
-// Attempt silent Google OAuth — no prompt, no popup, no warning
-// Resolves with access_token if Google already has a session, rejects if not
-function silentGoogleToken(hint) {
-  return new Promise((resolve, reject) => {
-    if (!window.google) { reject(new Error("GSI not loaded")); return; }
-    const client = window.google.accounts.oauth2.initTokenClient({
-      client_id: config.GOOGLE_CLIENT_ID,
-      scope: SCOPES,
-      prompt: "",
-      login_hint: hint || "",
-      callback: (tr) => {
-        if (tr.error) reject(new Error(tr.error));
-        else resolve(tr);
-      },
-    });
-    client.requestAccessToken({ prompt: "" });
-  });
+function saveEmailSession(email) {
+  const userData = { email, name: email.split("@")[0], picture: null };
+  localStorage.setItem(USER_KEY, JSON.stringify(userData));
+  return userData;
 }
 
-// Explicit Google sign-in — shows the account picker / warning if needed
-function explicitGoogleToken(hint) {
-  return new Promise((resolve, reject) => {
-    if (!window.google) { reject(new Error("GSI not loaded")); return; }
-    const client = window.google.accounts.oauth2.initTokenClient({
-      client_id: config.GOOGLE_CLIENT_ID,
-      scope: SCOPES,
-      login_hint: hint || "",
-      callback: (tr) => {
-        if (tr.error) reject(new Error(tr.error));
-        else resolve(tr);
-      },
-    });
-    client.requestAccessToken({ prompt: "select_account" });
-  });
+function saveToken(token, expiresIn) {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(TOKEN_KEY + "_expiry", String(Date.now() + (expiresIn - 60) * 1000));
 }
 
-function buildUserData(email, name, picture, expiresIn) {
-  return {
-    email,
-    name: name || email.split("@")[0],
-    picture: picture || null,
-    expiresAt: Date.now() + (expiresIn - 60) * 1000,
-  };
+function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(TOKEN_KEY + "_expiry");
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -89,134 +51,101 @@ export function useAuth() {
   const [token,   setToken]   = useState(session?.token || null);
   const [error,   setError]   = useState(null);
   const [loading, setLoading] = useState(false);
-  // "email_entry"   — user is typing their email
-  // "acquiring"     — silently getting Google token
-  // "needs_google"  — silent failed, show explicit sign-in button
-  // "done"          — authenticated
-  const [stage, setStage]     = useState(session ? "done" : "email_entry");
-  const [pendingEmail, setPendingEmail] = useState("");
+  const [stage,   setStage]   = useState(session?.user ? "done" : "email_entry");
   const refreshingRef = useRef(false);
 
-  const signOut = useCallback(() => {
-    if (token && window.google) window.google.accounts.oauth2.revoke(token, () => {});
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-    setToken(null); setUser(null); setError(null);
-    setStage("email_entry"); setPendingEmail("");
-  }, [token]);
-
-  // Step 1: user submits email
-  const submitEmail = useCallback(async (email) => {
-    const trimmed = email.trim().toLowerCase();
-    if (!trimmed) { setError("Please enter your email address."); return; }
-    if (!isEmailAllowed(trimmed)) {
-      setError(`${trimmed} is not authorised. Contact your ward administrator.`);
-      return;
-    }
-    setError(null);
-    setPendingEmail(trimmed);
-    setLoading(true);
-    setStage("acquiring");
-
-    // Wait for GSI to load (up to 5s)
-    let waited = 0;
-    while (!window.google && waited < 50) {
-      await new Promise(r => setTimeout(r, 100));
-      waited++;
-    }
+  // ── acquireToken — always runs in background, never blocks UI ────────────
+  const acquireToken = useCallback((hint) => {
+    if (refreshingRef.current) return;
     if (!window.google) {
-      setLoading(false);
-      setStage("needs_google");
+      const wait = setInterval(() => {
+        if (window.google) { clearInterval(wait); acquireToken(hint); }
+      }, 200);
       return;
     }
-
-    // Try silent token acquisition first
-    try {
-      const tr = await silentGoogleToken(trimmed);
-      await finishAuth(tr, trimmed);
-    } catch {
-      // Silent failed — user needs to click the Google button once
-      setLoading(false);
-      setStage("needs_google");
-    }
-  }, []); // eslint-disable-line
-
-  // Step 2 (if needed): explicit Google sign-in
-  const googleSignIn = useCallback(async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      const tr = await explicitGoogleToken(pendingEmail);
-      await finishAuth(tr, pendingEmail);
-    } catch (e) {
-      setError("Sign-in failed. Please try again.");
-      setLoading(false);
-      setStage("needs_google");
-    }
-  }, [pendingEmail]); // eslint-disable-line
-
-  async function finishAuth(tr, email) {
-    try {
-      // Fetch profile to confirm identity
-      const profile = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-        headers: { Authorization: `Bearer ${tr.access_token}` }
-      }).then(r => r.json());
-
-      const confirmedEmail = profile.email?.toLowerCase();
-
-      // Double-check the Google account matches the entered email
-      if (confirmedEmail !== email.toLowerCase()) {
-        setError(`Signed in as ${profile.email} but you entered ${email}. Please use the correct Google account.`);
-        setLoading(false);
-        setStage("needs_google");
-        return;
-      }
-
-      const userData = buildUserData(profile.email, profile.name, profile.picture, tr.expires_in);
-      saveSession(tr.access_token, userData);
-      setToken(tr.access_token);
-      setUser(userData);
-      setLoading(false);
-      setStage("done");
-    } catch {
-      setError("Could not verify your account. Please try again.");
-      setLoading(false);
-      setStage("needs_google");
-    }
-  }
-
-  // ── Token refresh (same as before — timer + visibility) ──────────────────
-  const maybeRefresh = useCallback(() => {
-    if (!user || refreshingRef.current) return;
-    const msLeft = user.expiresAt - Date.now();
-    if (msLeft > 10 * 60 * 1000) return;
-    if (msLeft <= 0) { signOut(); return; }
     refreshingRef.current = true;
-    if (!window.google) { signOut(); return; }
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: config.GOOGLE_CLIENT_ID,
       scope: SCOPES,
       prompt: "",
-      login_hint: user.email,
+      login_hint: hint || "",
       callback: (tr) => {
         refreshingRef.current = false;
         if (!tr.error) {
-          const u = buildUserData(user.email, user.name, user.picture, tr.expires_in);
-          saveSession(tr.access_token, u);
-          setToken(tr.access_token); setUser(u);
-        } else { signOut(); }
+          saveToken(tr.access_token, tr.expires_in);
+          setToken(tr.access_token);
+          setStage("done");
+        } else {
+          // Silent failed — show connect banner inside the app (non-blocking)
+          setStage("needs_google");
+        }
       },
     });
     client.requestAccessToken({ prompt: "" });
-  }, [user, signOut]);
+  }, []); // eslint-disable-line
+
+  // ── Step 1: Email gate — no Google involved ──────────────────────────────
+  const submitEmail = useCallback((email) => {
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed) { setError("Please enter your email address."); return; }
+    if (!getAllowedEmails().includes(trimmed)) {
+      setError(`${trimmed} is not authorised. Contact your ward administrator.`);
+      return;
+    }
+    setError(null);
+    const userData = saveEmailSession(trimmed);
+    setUser(userData);
+    setStage("done");
+    // Silently acquire Google token in background for Sheets access
+    acquireToken(trimmed);
+  }, [acquireToken]);
+
+  // ── Explicit Google sign-in — called from banner inside the app ──────────
+  const googleSignIn = useCallback(() => {
+    if (!window.google) return;
+    setLoading(true);
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: config.GOOGLE_CLIENT_ID,
+      scope: SCOPES,
+      login_hint: user?.email || "",
+      callback: (tr) => {
+        setLoading(false);
+        if (!tr.error) {
+          saveToken(tr.access_token, tr.expires_in);
+          setToken(tr.access_token);
+          setStage("done");
+        }
+      },
+    });
+    client.requestAccessToken({ prompt: "select_account" });
+  }, [user]);
+
+  // ── Sign out ──────────────────────────────────────────────────────────────
+  const signOut = useCallback(() => {
+    if (token && window.google) window.google.accounts.oauth2.revoke(token, () => {});
+    localStorage.removeItem(USER_KEY);
+    clearToken();
+    setToken(null); setUser(null); setError(null);
+    setStage("email_entry");
+  }, [token]);
+
+  // ── Token refresh — timer + visibilitychange (iOS) ───────────────────────
+  const maybeRefresh = useCallback(() => {
+    if (!user || refreshingRef.current) return;
+    const expiry = parseInt(localStorage.getItem(TOKEN_KEY + "_expiry") || "0");
+    const msLeft = expiry - Date.now();
+    if (msLeft > 10 * 60 * 1000) return;
+    acquireToken(user.email);
+  }, [user, acquireToken]);
 
   useEffect(() => {
-    if (!user) return;
-    const msLeft = user.expiresAt - Date.now();
-    if (msLeft <= 0) { signOut(); return; }
+    if (!user || !token) return;
+    const expiry = parseInt(localStorage.getItem(TOKEN_KEY + "_expiry") || "0");
+    const msLeft = expiry - Date.now();
+    if (msLeft <= 0) { clearToken(); setToken(null); return; }
     const timer = setTimeout(maybeRefresh, Math.max(msLeft - 5 * 60 * 1000, 1000));
     return () => clearTimeout(timer);
-  }, [user, signOut, maybeRefresh]);
+  }, [user, token, maybeRefresh]);
 
   useEffect(() => {
     if (!user) return;
@@ -225,5 +154,5 @@ export function useAuth() {
     return () => document.removeEventListener("visibilitychange", handler);
   }, [user, maybeRefresh]);
 
-  return { user, token, error, loading, stage, pendingEmail, submitEmail, googleSignIn, signOut };
+  return { user, token, error, loading, stage, submitEmail, googleSignIn, signOut };
 }
