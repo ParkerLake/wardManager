@@ -562,7 +562,7 @@ function LoginScreen({ onSubmitEmail, error }) {
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
-function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, googleLoading=false }) {
+function MainApp({ user, token, onSignOut }) {
   const windowWidth = useWindowWidth();
   const isMobile  = windowWidth < 1024;  // everything below laptop gets bottom tab bar
   const isTablet  = false;               // unused — single breakpoint approach
@@ -618,7 +618,7 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
   const doTestConnection = useCallback(async() => {
     setConnStatus("testing");
     try {
-      const result = await testConnection(tokenRef.current);
+      const result = await testConnection();
       if (result.missing.length > 0) {
         setConnStatus("warn");
         setConnMsg(`Missing tabs: ${result.missing.join(", ")}`);
@@ -644,11 +644,11 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
         if(silent) {
           // Lightweight: only appointments/callings/releasings (3 calls)
           const { sheetsLightPull } = await import("./sheets");
-          const d = await sheetsLightPull(tokenRef.current);
+          const d = await sheetsLightPull();
           if(!appointmentsDirty.current) setAppts(d.appointments);
           if(!pipelineDirty.current){ setCallings(d.callings); setReleasings(d.releasings); }
         } else {
-          const d = await pullAll(tokenRef.current);
+          const d = await pullAll();
           if(!appointmentsDirty.current) setAppts(d.appointments);
           if(!pipelineDirty.current){ setCallings(d.callings); setReleasings(d.releasings); }
           setBishopricMeeting(d.bishopricMeeting||[]);
@@ -656,7 +656,7 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
           if(d.roster) setRoster(d.roster);
           // Sacrament (non-blocking)
           try {
-            const sp = await pullSacrament(tokenRef.current);
+            const sp = await pullSacrament();
             if(sp.sacramentProgram){ setSacrament(sp.sacramentProgram); sacrRef.current=sp.sacramentProgram; }
           } catch(e) { /* sacrament sheet not yet configured */ }
         }
@@ -668,14 +668,14 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
           // Background: skip Calendar/WCM/Links — handled by useMeetingSync polls or manual pull
           // Only pull WCM for ward council users (admins use useMeetingSync)
           if(!isAdminRef.current) {
-            const wc = await pullWardCouncilMeeting(tokenRef.current);
+            const wc = await pullWardCouncilMeeting();
             if(wc.wardCouncilMeeting){ setWardCouncilMeeting(wc.wardCouncilMeeting); wcmRef.current=wc.wardCouncilMeeting; }
           }
         } else {
           const [cp, wc, ros] = await Promise.all([
-            pullCalendar(tokenRef.current),
-            pullWardCouncilMeeting(tokenRef.current),
-            pullRosterFromWardCouncil(tokenRef.current),
+            pullCalendar(),
+            pullWardCouncilMeeting(),
+            pullRosterFromWardCouncil(),
           ]);
           if(cp.calendar){ setCalendar(cp.calendar); calendarRef.current=cp.calendar; }
           if(wc.wardCouncilMeeting){ setWardCouncilMeeting(wc.wardCouncilMeeting); wcmRef.current=wc.wardCouncilMeeting; }
@@ -684,10 +684,10 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
           try {
             const { pullBishopricLinks, pullWardCouncilLinks } = await import("./sheets");
             if(isAdminRef.current) {
-              const bl = await pullBishopricLinks(tokenRef.current);
+              const bl = await pullBishopricLinks();
               if(bl.links) setBishopricLinks(bl.links);
             }
-            const wl = await pullWardCouncilLinks(tokenRef.current);
+            const wl = await pullWardCouncilLinks();
             if(wl.links) setWcLinks(wl.links);
           } catch(_) {}
         }
@@ -707,7 +707,7 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
     if(!pulledRef.current||pushing.current||!isAdminRef.current) return;
     pushing.current=true; setSyncStatus("pushing");
     try {
-      await pushAll(tokenRef.current,{
+      await pushAll({
         appointments:apptRef.current, callings:callRef.current,
         releasings:relRef.current, members:membRef.current,
       });
@@ -723,12 +723,12 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
   // Sacrament save — called by SacramentTab's useMeetingSync hook
   const doSacramentSave = useCallback(async(data) => {
     if(!pulledRef.current) return;
-    await pushSacrament(tokenRef.current, data ?? sacrRef.current);
+    await pushSacrament( data ?? sacrRef.current);
   },[]);
 
   // Sacrament pull — used by useMeetingSync for pending-changes detection
   const doSacramentPull = useCallback(async() => {
-    const sp = await pullSacrament(tokenRef.current);
+    const sp = await pullSacrament();
     return sp.sacramentProgram || [];
   },[]);
 
@@ -764,7 +764,7 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
     }
     // Leaving Bishopric — pull fresh bishopric meeting data (admin only)
     if(prev==="bishopric"&&tab!=="bishopric"&&pulledRef.current&&isAdminRef.current){
-      pullAll(tokenRef.current).then(d=>{
+      pullAll().then(d=>{
         if(d.bishopricMeeting){setBishopricMeeting(d.bishopricMeeting);bmRef.current=d.bishopricMeeting;}
       }).catch(()=>{});
     }
@@ -1003,26 +1003,14 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
 
 
 
-      {needsGoogle && (
-        <div style={{ background:"#FEF8ED", borderBottom:"1px solid #C1A01E",
-          padding:"10px 20px", display:"flex", alignItems:"center", justifyContent:"space-between",
-          gap:12, fontSize:13, fontFamily:"'Helvetica Neue',Arial,sans-serif" }}>
-          <span style={{ color:"#7a5c00" }}>Connect your Google account to load ward data.</span>
-          <button onClick={onGoogleSignIn} disabled={googleLoading}
-            style={{ background:C.blue35, color:"#fff", border:"none", borderRadius:6,
-              padding:"6px 14px", fontSize:12, fontWeight:600, cursor:"pointer",
-              opacity:googleLoading?.6:1, whiteSpace:"nowrap" }}>
-            {googleLoading ? "Connecting…" : "Connect Google"}
-          </button>
-        </div>
-      )}
+
       <main style={{padding:isMobile?"16px 12px 80px":"24px 28px",maxWidth:1440,margin:"0 auto"}}>
         {isAdmin&&tab==="appointments"&&<AppointmentsTab data={appointments} setData={setAppts} roster={roster} onDelete={async(updatedData)=>{
             apptRef.current=updatedData;
             appointmentsDirty.current=true;
             try {
               const {pushAll}=await import("./sheets");
-              await pushAll(tokenRef.current,{appointments:updatedData,callings:callRef.current,releasings:relRef.current,members:membRef.current});
+              await pushAll({appointments:updatedData,callings:callRef.current,releasings:relRef.current,members:membRef.current});
               setSyncStatus("idle");
             } catch(e){ notify.error("Save failed: "+e.message,6000); }
             finally { appointmentsDirty.current=false; }
@@ -1057,7 +1045,7 @@ function MainApp({ user, token, onSignOut, needsGoogle=false, onGoogleSignIn, go
             pipelineDirty.current=true;
             try {
               const {pushAll}=await import("./sheets");
-              await pushAll(tokenRef.current,{appointments:apptRef.current,callings:callRef.current,releasings:updated,members:membRef.current});
+              await pushAll({appointments:apptRef.current,callings:callRef.current,releasings:updated,members:membRef.current});
               setSyncStatus("idle");
             } catch(e){ notify.error("Save failed: "+e.message,6000); }
             finally { pipelineDirty.current=false; }
@@ -1556,7 +1544,7 @@ function useMeetingSync({ getData, saveFn, pullFn, diffFn, tokenRef, onApply, en
     const dirtySnapshot = new Set(dirtyKeysRef.current);
     dirtyKeysRef.current.clear();
     try {
-      await saveFn(tokenRef.current, getData());
+      await saveFn(getData());
       setSaveStatus("saved");
     } catch (e) {
       // Restore dirty keys so the next save attempt retries them
@@ -1585,7 +1573,7 @@ function useMeetingSync({ getData, saveFn, pullFn, diffFn, tokenRef, onApply, en
     const poll = async () => {
       if (Date.now() - lastEditRef.current < 5000) return;
       try {
-        const remote = await pullFn(tokenRef.current);
+        const remote = await pullFn();
         if (!remote) return;
         const diff = diffFn(getData(), remote);
         if (diff > 0) {
@@ -1886,7 +1874,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
     setPrayerListLoading(true);
     try {
       const { pullPrayerList } = await import("./sheets");
-      const data = await pullPrayerList(tokenRef.current);
+      const data = await pullPrayerList();
       setPrayerListData(data);
     } catch(e) {
       setPrayerListData([]);
@@ -2040,14 +2028,14 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   const { markDirty: bmMarkDirty, doSave, saveStatus: bmSaveStatus,
           pendingCount: bmPendingCount, applyPending: bmApplyPending } = useMeetingSync({
     getData:  () => bmDataRef.current,
-    saveFn:   async (tok, data) => {
+    saveFn:   async (data) => {
       if (!tok) return; // skip if token not yet available
       const { pushBishopricMeeting } = await import("./sheets");
-      await pushBishopricMeeting(tok, data);
+      await pushBishopricMeeting(data);
     },
-    pullFn:   async (tok) => {
+    pullFn:   async () => {
       const { pullAll } = await import("./sheets");
-      const d = await pullAll(tok);
+      const d = await pullAll();
       return d.bishopricMeeting || [];
     },
     diffFn:   bmDiff,
@@ -2770,7 +2758,7 @@ function CalendarTab({ calendar, setCalendar, token, isMobile=false }) {
     setSaving(true);
     try {
       const { pushCalendar } = await import("./sheets");
-      await pushCalendar(token, data);
+      await pushCalendar(data);
       notify.success("Calendar saved");
     } catch(e) {
       notify.error("Save failed: " + e.message);
@@ -2802,7 +2790,7 @@ function CalendarTab({ calendar, setCalendar, token, isMobile=false }) {
     setSyncing(true);
     try {
       const { pullCalendar } = await import("./sheets");
-      const cp = await pullCalendar(token);
+      const cp = await pullCalendar();
       if (cp.calendar) setCalendar(cp.calendar);
       notify.success("Calendar refreshed");
     } catch(e) {
@@ -3151,7 +3139,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     setPrayerListLoading(true);
     try {
       const { pullPrayerList } = await import("./sheets");
-      const data = await pullPrayerList(tokenRef.current);
+      const data = await pullPrayerList();
       setPrayerListData(data);
     } catch(e) {
       setPrayerListData([]);
@@ -3178,14 +3166,14 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
   const { markDirty: wcMarkDirty, doSave, saveStatus: wcSaveStatus,
           pendingCount: wcPendingCount, applyPending: wcApplyPending } = useMeetingSync({
     getData:  () => wcDataRef.current,
-    saveFn:   async (tok, data) => {
+    saveFn:   async (data) => {
       if (!tok) return; // skip if token not yet available
       const { pushWardCouncilMeeting } = await import("./sheets");
-      await pushWardCouncilMeeting(tok, data);
+      await pushWardCouncilMeeting(data);
     },
-    pullFn:   async (tok) => {
+    pullFn:   async () => {
       const { pullWardCouncilMeeting } = await import("./sheets");
-      const d = await pullWardCouncilMeeting(tok);
+      const d = await pullWardCouncilMeeting();
       return d.wardCouncilMeeting || [];
     },
     diffFn:   wcDiff,
@@ -3828,7 +3816,7 @@ function LinksTab({ bishopricLinks, setBishopricLinks, wcLinks, setWcLinks, toke
     section.setData(newData);
     try {
       const mod = await import("./sheets");
-      await mod[section.pushFn](token, newData);
+      await mod[section.pushFn](newData);
       notify.success(isNew ? "Link added" : "Link updated");
     } catch(e) {
       notify.error("Save failed: " + e.message);
@@ -3845,7 +3833,7 @@ function LinksTab({ bishopricLinks, setBishopricLinks, wcLinks, setWcLinks, toke
     section.setData(newData);
     try {
       const mod = await import("./sheets");
-      await mod[section.pushFn](token, newData);
+      await mod[section.pushFn](newData);
       notify.info("Link removed");
     } catch(e) {
       notify.error("Save failed: " + e.message);
@@ -4129,7 +4117,7 @@ function RosterEditor({roster,setRoster,token}) {
     setSaving(true);
     try {
       const { pushRoster } = await import("./sheets");
-      await pushRoster(token, localRoster);
+      await pushRoster(localRoster);
       setRoster(localRoster);
       notify.success("Roster saved");
     } catch(e) {
@@ -4993,11 +4981,7 @@ function PushIcon(){return<Save size={11}/>;}
 
 // ─── Root ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const { user, token, error, loading, stage, submitEmail, googleSignIn, signOut } = useAuth();
-  // Email gate — only block here, never for Google auth
-  if (!user || stage === "email_entry") return (
-    <LoginScreen onSubmitEmail={submitEmail} error={error}/>
-  );
-  // User is in — show the app. If needs_google, show a banner but don't block.
-  return <MainApp user={user} token={token} onSignOut={signOut} needsGoogle={stage==="needs_google"} onGoogleSignIn={googleSignIn} googleLoading={loading}/>;
+  const { user, error, submitEmail, signOut } = useAuth();
+  if (!user) return <LoginScreen onSubmitEmail={submitEmail} error={error}/>;
+  return <MainApp user={user} token={null} onSignOut={signOut}/>;
 }

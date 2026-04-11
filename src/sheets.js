@@ -1,32 +1,36 @@
 import config from "./config";
 
+// ── Worker proxy — all Sheets API calls go through here ──────────────────────
+// The Worker holds the service account key securely server-side.
+// No Google OAuth token needed from the user at all.
+
+const WORKER_URL = "https://ward-manager-sheets.parkerllake.workers.dev";
+
 const SID  = () => config.SPREADSHEET_ID;
 const SSID = () => config.SACRAMENT_SHEET_ID;
+const WCID = () => config.WARD_COUNCIL_SHEET_ID;
 
-async function sheetsReq(token, sheetId, range, method = "GET", body = null) {
-  const base = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}`;
-  // POST = append (requires :append suffix), PUT = update existing row
-  const url  = method === "GET"  ? base
-             : method === "POST" ? `${base}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`
-             :                     `${base}?valueInputOption=USER_ENTERED`;
-  const res  = await fetch(url, {
+async function sheetsReq(sheetId, range, method = "GET", body = null) {
+  const params = new URLSearchParams({ spreadsheetId: sheetId, range });
+  const url = `${WORKER_URL}/sheets?${params}`;
+  const res = await fetch(url, {
     method,
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   if (!res.ok) {
     const t = await res.text();
-    console.error(`Sheets API ${res.status} on ${method} ${range}:`, t);
+    console.error(`Worker ${res.status} on ${method} ${range}:`, t);
     throw new Error(`Sheets API ${res.status}: ${t}`);
   }
   return res.json();
 }
 
-const bishopricReq = (token, range, method, body) => sheetsReq(token, SID(),  range, method, body);
-const sacramentReq = (token, range, method, body) => sheetsReq(token, SSID(), range, method, body);
+const bishopricReq = (range, method, body) => sheetsReq(SID(),  range, method, body);
+const sacramentReq = (range, method, body) => sheetsReq(SSID(), range, method, body);
+const wcReq        = (range, method, body) => sheetsReq(WCID(), range, method, body);
 
-// Safe overwrite — pads with empty rows up to a safe max so old rows get blanked
-// Avoids the clear+write race condition where the sheet is briefly empty
+// ── Pad rows so deletions clear trailing rows in the sheet ───────────────────
 function padRows(values, minRows = 500) {
   const cols = values[0]?.length || 1;
   const empty = Array(cols).fill("");
@@ -35,408 +39,239 @@ function padRows(values, minRows = 500) {
   return padded;
 }
 
-async function clearAndWrite(token, sheetId, range, values) {
-  // Write data + blank padding rows — overwrites any stale rows without a separate clear step
-  return sheetsReq(token, sheetId, range, "PUT", { values: padRows(values) });
+async function clearAndWrite(sheetId, range, values) {
+  return sheetsReq(sheetId, range, "PUT", { values: padRows(values) });
 }
 
-// Throttled sequential updates — avoids rate limits without needing batchUpdate scope
-async function sheetsBatchUpdate(token, sheetId, data) {
-  if (!data || data.length === 0) return;
-  // Run updates in chunks of 5, sequentially, to stay well under API rate limits
-  const CHUNK = 5;
-  const reqFn = (token, range, method, body) => sheetsReq(token, sheetId, range, method, body);
-  for (let i = 0; i < data.length; i += CHUNK) {
-    const chunk = data.slice(i, i + CHUNK);
-    await Promise.all(chunk.map(({ range, values }) => reqFn(token, range, "PUT", { values })));
-  }
-}
+// ── Row converters ────────────────────────────────────────────────────────────
 
-export async function testConnection(token) {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SID()}?fields=sheets.properties.title`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Cannot reach spreadsheet (${res.status}). Check your SPREADSHEET_ID in config.js.\n${t}`);
-  }
-  const data    = await res.json();
-  const tabs    = (data.sheets || []).map(s => s.properties.title);
-  const need    = ["Appointments", "Callings", "Releasings", "Members", "BishopricMeeting", "Roster"];
-  const missing = need.filter(n => !tabs.includes(n));
-  return { tabs, missing };
-}
-
-// ── Row converters ─────────────────────────────────────────────────────────────
-
-export function rowsToAppointments(rows) {
-  if (!rows || rows.length < 2) return [];
-  return rows.slice(1).map((r, i) => ({
-    // Stable content-based ID — same data always gets same ID
-    id: `a_${(r[0]||"").replace(/\s+/g,"_").toLowerCase()}_${(r[3]||"").replace(/\s+/g,"_").toLowerCase()}_${(r[4]||"").replace(/\s+/g,"_").toLowerCase()}_${i}`,
-    name: r[0]||"", status: r[1]||"Need to Schedule",
-    owner: r[2]||"", purpose: r[3]||"", apptDate: r[4]||"", notes: r[5]||"",
-  }));
-}
-
-export function rowsToCallings(rows) {
-  if (!rows || rows.length < 2) return [];
-  return rows.slice(1).map((r, i) => ({
-    id: `c_${i}`, calling: r[0]||"", name: r[1]||"", stage: r[2]||"Discuss", notes: r[3]||"",
-  }));
-}
-
-export function rowsToMembers(rows) {
-  if (!rows || rows.length < 2) return [];
-  return rows.slice(1).map((r, i) => ({
-    id: `mb_${i}`, name: r[0]||"", calling: r[1]||"",
-    phone: r[2]||"", email: r[3]||"", notes: r[4]||"",
-  }));
-}
-
-export function rowsToBishopricMeeting(rows) {
-  if (!rows || rows.length < 2) return [];
-  return rows.slice(1).map((r, i) => ({
-    id:           `bm_${i}`,
-    date:         r[0]||"",
-    itemKey:      r[1]||"",
-    assignee:     r[2]||"",
-    done:         r[3]==="TRUE",
-    notes:        r[4]||"",
-    customLabel:  r[5]||"",
-    spiritToggle: r[6]||"",   // "spiritual_thought" | "handbook_review" | ""
-  }));
-}
-
-export function rowsToSacramentProgram(rows) {
-  if (!rows || rows.length < 2) return [];
-  return rows.slice(1).map((r, i) => ({
-    id: `sp_${i}`,
-    date:        r[0]||"",
-    section:     r[1]||"",
-    globalOrder: parseInt(r[2]||"0", 10),
-    label:       r[3]||"",
-    value:       r[4]||"",
-    notes:       r[5]||"",
-  }));
-}
-
-export function rowsToRoster(rows) {
-  // rows: [[Role, Name], ...]
-  if (!rows || rows.length < 2) return [];
-  return rows.slice(1).map(r => ({ role: r[0]||"", name: r[1]||"" }));
-}
-
-export function rosterToRows(data) {
-  return [
-    ["Role", "Name"],
-    ...data.map(r => [r.role, r.name||""]),
-  ];
-}
-
-// ── Row serializers ────────────────────────────────────────────────────────────
-
-export function appointmentsToRows(data) {
+function appointmentsToRows(data) {
   return [
     ["Name", "Status", "Owner", "Purpose", "Appt Date", "Notes"],
     ...data.map(a => [a.name, a.status, a.owner, a.purpose, a.apptDate, a.notes]),
   ];
 }
 
-export function callingsToRows(data) {
-  return [
-    ["Calling", "Name", "Stage", "Notes"],
-    ...data.map(c => [c.calling, c.name, c.stage, c.notes]),
-  ];
-}
-
-export function membersToRows(data) {
-  return [
-    ["Name", "Calling", "Phone", "Email", "Notes"],
-    ...data.map(m => [m.name, m.calling||"", m.phone||"", m.email||"", m.notes||""]),
-  ];
-}
-
-export function bishopricMeetingToRows(data) {
-  return [
-    ["Date", "ItemKey", "Assignee", "Done", "Notes", "CustomLabel", "SpiritualToggle"],
-    ...data.map(r => [
-      r.date, r.itemKey, r.assignee||"",
-      r.done ? "TRUE" : "FALSE",
-      r.notes||"", r.customLabel||"", r.spiritToggle||"",
-    ]),
-  ];
-}
-
-export function sacramentProgramToRows(data) {
-  return [
-    ["Date", "Section", "Order", "Label", "Value", "Notes"],
-    ...data.map(r => [r.date, r.section, r.globalOrder ?? 0, r.label, r.value, r.notes]),
-  ];
-}
-
-// ── Pull / Push ────────────────────────────────────────────────────────────────
-
-export async function pullAll(token) {
-  const [a, c, r, mb, bm, ros] = await Promise.all([
-    bishopricReq(token, "Appointments!A:F"),
-    bishopricReq(token, "Callings!A:D"),
-    bishopricReq(token, "Releasings!A:D"),
-    bishopricReq(token, "Members!A:E").catch(() => ({ values: [] })),
-    bishopricReq(token, "BishopricMeeting!A:G").catch(() => ({ values: [] })),
-    bishopricReq(token, "Roster!A:B").catch(() => ({ values: [] })),
-  ]);
-  return {
-    appointments:    rowsToAppointments(a.values),
-    callings:        rowsToCallings(c.values),
-    releasings:      rowsToCallings(r.values),
-    members:         rowsToMembers(mb.values),
-    bishopricMeeting: rowsToBishopricMeeting(bm.values),
-    roster:          rowsToRoster(ros.values),
-  };
-}
-
-// Lightweight background pull — only appointments/callings/releasings (3 calls)
-// Used for silent background refreshes to stay under API quota
-export async function sheetsLightPull(token) {
-  const [a, c, r] = await Promise.all([
-    bishopricReq(token, "Appointments!A:F"),
-    bishopricReq(token, "Callings!A:D"),
-    bishopricReq(token, "Releasings!A:D"),
-  ]);
-  return {
-    appointments: rowsToAppointments(a.values),
-    callings:     rowsToCallings(c.values),
-    releasings:   rowsToCallings(r.values),
-  };
-}
-
-export async function pullSacrament(token) {
-  if (!SSID() || SSID().includes("YOUR_")) return { sacramentProgram: [] };
-  const sp = await sacramentReq(token, "SacramentProgram!A:F").catch(() => ({ values: [] }));
-  return { sacramentProgram: rowsToSacramentProgram(sp.values) };
-}
-
-export async function pushAll(token, { appointments, callings, releasings, members }) {
-  const sid = SID();
-  const ops = [
-    clearAndWrite(token, sid, "Appointments!A:F", appointmentsToRows(appointments)),
-    clearAndWrite(token, sid, "Callings!A:D",     callingsToRows(callings)),
-    clearAndWrite(token, sid, "Releasings!A:D",   callingsToRows(releasings)),
-  ];
-  if (members !== undefined) ops.push(bishopricReq(token, "Members!A:E", "PUT", { values: membersToRows(members) }));
-  await Promise.all(ops);
-}
-
-export async function pushBishopricMeeting(token, data) {
-  if (!token) throw new Error("Not authenticated — please refresh and sign in again");
-  if (!data || !Array.isArray(data) || data.length === 0) return;
-  // Pull current sheet to find row positions
-  const current = await bishopricReq(token, "BishopricMeeting!A:G").catch(() => ({ values: [] }));
-  const rows = current.values || [];
-
-  const rowIndex = {};
-  rows.slice(1).forEach((r, i) => {
-    if (r[0] && r[1]) rowIndex[`${r[0]}|${r[1]}`] = i + 2;
-  });
-
-  const toUpdate = []; // batchUpdate data entries
-  const toAppend = []; // rows to append
-
-  data.forEach(r => {
-    const key = `${r.date}|${r.itemKey}`;
-    const rowValues = [r.date, r.itemKey, r.assignee||"", r.done?"TRUE":"FALSE", r.notes||"", r.customLabel||"", r.spiritToggle||""];
-    if (rowIndex[key]) {
-      const n = rowIndex[key];
-      toUpdate.push({ range: `BishopricMeeting!A${n}:G${n}`, values: [rowValues] });
-    } else {
-      toAppend.push(rowValues);
-    }
-  });
-
-  // Single batch call for all updates, then one append call
-  await sheetsBatchUpdate(token, SID(), toUpdate);
-
-  if (toAppend.length > 0) {
-    await bishopricReq(token, "BishopricMeeting!A:G", "POST", { values: toAppend });
-  }
-}
-
-export async function pullWardCouncilMeeting(token) {
-  if (!WCID() || WCID().includes("YOUR_")) return { wardCouncilMeeting: [] };
-  const res = await wardCouncilReq(token, "WardCouncilMeeting!A:G").catch(() => ({ values: [] }));
-  return { wardCouncilMeeting: rowsToWardCouncilMeeting(res.values) };
-}
-
-export async function pushWardCouncilMeeting(token, data) {
-  if (!token) throw new Error("Not authenticated — please refresh and sign in again");
-  if (!data || !Array.isArray(data) || data.length === 0) return;
-  // Pull current sheet to find row positions
-  const current = await wardCouncilReq(token, "WardCouncilMeeting!A:G").catch(() => ({ values: [] }));
-  const rows = current.values || [];
-
-  const rowIndex = {};
-  rows.slice(1).forEach((r, i) => {
-    if (r[0] && r[1]) rowIndex[`${r[0]}|${r[1]}`] = i + 2;
-  });
-
-  const toUpdate = [];
-  const toAppend = [];
-
-  data.forEach(r => {
-    const key = `${r.date}|${r.itemKey}`;
-    const rowValues = [r.date, r.itemKey, r.assignee||"", r.done?"TRUE":"FALSE", r.notes||"", r.customLabel||"", r.spiritToggle||""];
-    if (rowIndex[key]) {
-      const n = rowIndex[key];
-      toUpdate.push({ range: `WardCouncilMeeting!A${n}:G${n}`, values: [rowValues] });
-    } else {
-      toAppend.push(rowValues);
-    }
-  });
-
-  // Single batch call for all updates, then one append call
-  await sheetsBatchUpdate(token, WCID(), toUpdate);
-
-  if (toAppend.length > 0) {
-    await wardCouncilReq(token, "WardCouncilMeeting!A:G", "POST", { values: toAppend });
-  }
-}
-
-export async function pushRoster(token, data) {
-  await bishopricReq(token, "Roster!A:B", "PUT", { values: rosterToRows(data) });
-}
-
-export async function pushSacrament(token, sacramentProgram) {
-  if (!SSID() || SSID().includes("YOUR_")) return;
-  await sacramentReq(token, "SacramentProgram!A:F", "PUT", {
-    values: sacramentProgramToRows(sacramentProgram),
-  });
-}
-
-// ── Prayer List (separate sheet, read-only) ──────────────────────────────────
-const prayerListReq = (token, range, method, body) =>
-  sheetsReq(token, config.PRAYER_LIST_SHEET_ID, range, method, body);
-
-// ── Ward Council / Calendar ───────────────────────────────────────────────────
-const WCID = () => config.WARD_COUNCIL_SHEET_ID;
-const wardCouncilReq = (token, range, method, body) => sheetsReq(token, WCID(), range, method, body);
-
-export function rowsToWardCouncilMeeting(rows) {
+function rowsToAppointments(rows) {
   if (!rows || rows.length < 2) return [];
   return rows.slice(1).map((r, i) => ({
-    id:           `wc_${i}`,
-    date:         r[0]||"",
-    itemKey:      r[1]||"",
-    assignee:     r[2]||"",
-    done:         r[3]==="TRUE",
-    notes:        r[4]||"",
-    customLabel:  r[5]||"",
-    spiritToggle: r[6]||"",
+    id: `a_${(r[0]||"").replace(/\s+/g,"_").toLowerCase()}_${(r[3]||"").replace(/\s+/g,"_").toLowerCase()}_${(r[4]||"").replace(/\s+/g,"_").toLowerCase()}_${i}`,
+    name: r[0]||"", status: r[1]||"Need to Schedule",
+    owner: r[2]||"", purpose: r[3]||"", apptDate: r[4]||"", notes: r[5]||"",
   }));
 }
 
-export function wardCouncilMeetingToRows(data) {
+function callingsToRows(data) {
   return [
-    ["Date", "ItemKey", "Assignee", "Done", "Notes", "CustomLabel", "SpiritualToggle"],
-    ...data.map(r => [
-      r.date, r.itemKey, r.assignee||"",
-      r.done ? "TRUE" : "FALSE",
-      r.notes||"", r.customLabel||"", r.spiritToggle||"",
-    ]),
+    ["Name", "Calling", "Stage", "Notes"],
+    ...data.map(c => [c.name, c.calling, c.stage, c.notes||""]),
   ];
 }
 
-export function rowsToCalendar(rows) {
+function rowsToCallings(rows) {
   if (!rows || rows.length < 2) return [];
   return rows.slice(1)
-    .filter(r => r[0] || r[2]) // must have date or event
+    .filter(r => r[0] || r[1])
     .map((r, i) => ({
-      id:    `cal_${i}`,
-      date:  r[0] || "",
-      time:  r[1] || "",
-      event: r[2] || "",
+      id: `c_${i}`, name: r[0]||"", calling: r[1]||"",
+      stage: r[2]||"Proposed", notes: r[3]||"",
     }));
 }
 
-export function calendarToRows(data) {
+function membersToRows(data) {
   return [
-    ["Date", "Time", "Event"],
-    ...data.map(r => [r.date, r.time || "", r.event]),
+    ["Name", "Email", "Phone", "Calling", "Notes"],
+    ...data.map(m => [m.name, m.email||"", m.phone||"", m.calling||"", m.notes||""]),
   ];
 }
 
-export async function pullRosterFromWardCouncil(token) {
-  const wcid = config.WARD_COUNCIL_SHEET_ID;
-  if (!wcid || wcid.includes("YOUR_")) return { roster: [] };
-  const res = await wardCouncilReq(token, "Roster!A:B").catch(() => ({ values: [] }));
-  return { roster: rowsToRoster(res.values || []) };
-}
-
-export async function pullCalendar(token) {
-  const wcid = config.WARD_COUNCIL_SHEET_ID;
-  if (!wcid || wcid.includes("YOUR_")) return { calendar: [] };
-  const data = await wardCouncilReq(token, "Calendar!A:C");
-  return { calendar: rowsToCalendar(data.values || []) };
-}
-
-export async function pushCalendar(token, data) {
-  const rows = calendarToRows(data);
-  await wardCouncilReq(token, "Calendar!A1", "PUT", { values: rows });
-}
-
-export async function pullPrayerList(token) {
-  const plid = config.PRAYER_LIST_SHEET_ID;
-  if (!plid || plid.includes("YOUR_")) return [];
-  const d = await prayerListReq(token, "Sheet1!A:B").catch(() => ({ values: [] }));
-  const rows = d.values || [];
-  if (rows.length < 2) return [];
-  // Skip header row, return [{category, name}]
+function rowsToMembers(rows) {
+  if (!rows || rows.length < 2) return [];
   return rows.slice(1)
-    .filter(r => r[0] || r[1])
-    .map(r => ({ category: r[0] || "", name: r[1] || "" }));
+    .filter(r => r[0])
+    .map((r, i) => ({
+      id: `m_${i}`, name: r[0]||"", email: r[1]||"",
+      phone: r[2]||"", calling: r[3]||"", notes: r[4]||"",
+    }));
 }
 
-// ─── Links ────────────────────────────────────────────────────────────────────
+function rowsToMeeting(rows) {
+  if (!rows || rows.length < 2) return [];
+  return rows.slice(1)
+    .filter(r => r[0] || r[1] || r[2])
+    .map((r, i) => ({
+      id: `mt_${i}`, topic: r[0]||"", owner: r[1]||"",
+      status: r[2]||"", notes: r[3]||"",
+    }));
+}
+
+function meetingToRows(data) {
+  return [
+    ["Topic", "Owner", "Status", "Notes"],
+    ...data.map(m => [m.topic, m.owner, m.status||"", m.notes||""]),
+  ];
+}
+
 function rowsToLinks(rows) {
   if (!rows || rows.length < 2) return [];
   return rows.slice(1)
-    .filter(r => r[1] || r[2]) // must have name or URL
-    .map(r => ({
-      id:          r[0] || `link_${Math.random().toString(36).slice(2,9)}`,
-      name:        r[1] || "",
-      url:         r[2] || "",
-      description: r[3] || "",
+    .filter(r => r[0] || r[2])
+    .map((r, i) => ({
+      id: r[0] || `lnk_${i}`, name: r[1]||"", url: r[2]||"", description: r[3]||"",
     }));
 }
 
-function linksToRows(data) {
-  return [
-    ["ID", "Name", "URL", "Description"],
-    ...data.map(r => [r.id, r.name, r.url, r.description || ""]),
+// ── Pull functions ────────────────────────────────────────────────────────────
+
+export async function pullAll() {
+  const [appts, callings, releasings, members, meeting] = await Promise.all([
+    bishopricReq("Appointments!A:F").then(r => rowsToAppointments(r.values)),
+    bishopricReq("Callings!A:D").then(r => rowsToCallings(r.values)),
+    bishopricReq("Releasings!A:D").then(r => rowsToCallings(r.values)),
+    bishopricReq("Members!A:E").then(r => rowsToMembers(r.values)),
+    bishopricReq("BishopricMeeting!A:D").then(r => rowsToMeeting(r.values)),
+  ]);
+  return { appointments: appts, callings, releasings, members, bishopricMeeting: meeting };
+}
+
+export async function pullSacramentProgram() {
+  const r = await sacramentReq("SacramentProgram!A:F");
+  if (!r.values || r.values.length < 2) return { sacramentProgram: [] };
+  const rows = r.values.slice(1).map((row, i) => ({
+    id: `sp_${i}`, role: row[0]||"", name: row[1]||"",
+    topic: row[2]||"", hymn: row[3]||"", time: row[4]||"", notes: row[5]||"",
+  }));
+  return { sacramentProgram: rows };
+}
+
+export async function pullWardCouncilMeeting() {
+  const r = await wcReq("WardCouncilMeeting!A:D");
+  return { wardCouncilMeeting: rowsToMeeting(r.values) };
+}
+
+export async function pullBishopricLinks() {
+  const r = await bishopricReq("Links!A:D");
+  return { links: rowsToLinks(r.values) };
+}
+
+export async function pullWardCouncilLinks() {
+  const r = await wcReq("Links!A:D");
+  return { links: rowsToLinks(r.values) };
+}
+
+export async function sheetsLightPull() {
+  const [appts, callings, releasings] = await Promise.all([
+    bishopricReq("Appointments!A:F").then(r => rowsToAppointments(r.values)),
+    bishopricReq("Callings!A:D").then(r => rowsToCallings(r.values)),
+    bishopricReq("Releasings!A:D").then(r => rowsToCallings(r.values)),
+  ]);
+  return { appointments: appts, callings, releasings };
+}
+
+// ── Push functions ────────────────────────────────────────────────────────────
+
+export async function pushAll({ appointments, callings, releasings, members }) {
+  const sid = SID();
+  const ops = [
+    clearAndWrite(sid, "Appointments!A:F", appointmentsToRows(appointments)),
+    clearAndWrite(sid, "Callings!A:D",     callingsToRows(callings)),
+    clearAndWrite(sid, "Releasings!A:D",   callingsToRows(releasings)),
   ];
+  if (members !== undefined) {
+    ops.push(clearAndWrite(sid, "Members!A:E", membersToRows(members)));
+  }
+  await Promise.all(ops);
 }
 
-export async function pullBishopricLinks(token) {
-  if (!SID() || SID().includes("YOUR_")) return { links: [] };
+export async function pushBishopricMeeting(data) {
+  await clearAndWrite(SID(), "BishopricMeeting!A:D", meetingToRows(data));
+}
+
+export async function pushWardCouncilMeeting(data) {
+  await clearAndWrite(WCID(), "WardCouncilMeeting!A:D", meetingToRows(data));
+}
+
+export async function pushSacramentProgram(rows) {
+  const values = [
+    ["Role", "Name", "Topic", "Hymn", "Time", "Notes"],
+    ...rows.map(r => [r.role||"", r.name||"", r.topic||"", r.hymn||"", r.time||"", r.notes||""]),
+  ];
+  await clearAndWrite(SSID(), "SacramentProgram!A:F", values);
+}
+
+// ── Calendar ──────────────────────────────────────────────────────────────────
+
+export async function pullCalendar() {
+  const r = await wcReq("Calendar!A:E");
+  if (!r.values || r.values.length < 2) return { calendar: [] };
+  return {
+    calendar: r.values.slice(1).filter(r => r[0]).map((r, i) => ({
+      id: `cal_${i}`, date: r[0]||"", time: r[1]||"",
+      event: r[2]||"", location: r[3]||"", notes: r[4]||"",
+    })),
+  };
+}
+
+export async function pushCalendar(data) {
+  const values = [
+    ["Date", "Time", "Event", "Location", "Notes"],
+    ...data.map(e => [e.date||"", e.time||"", e.event||"", e.location||"", e.notes||""]),
+  ];
+  await clearAndWrite(WCID(), "Calendar!A:E", values);
+}
+
+// ── Roster ────────────────────────────────────────────────────────────────────
+
+export async function pullRoster() {
+  const r = await bishopricReq("Roster!A:B");
+  if (!r.values || r.values.length < 2) return { roster: [] };
+  return {
+    roster: r.values.slice(1).filter(r => r[0]).map(r => ({
+      role: r[0]||"", name: r[1]||"",
+    })),
+  };
+}
+
+export async function pushRoster(data) {
+  const values = [
+    ["Role", "Name"],
+    ...data.map(r => [r.role||"", r.name||""]),
+  ];
+  await clearAndWrite(SID(), "Roster!A:B", values);
+}
+
+// ── Aliases for backward compatibility ───────────────────────────────────────
+export const pullSacrament = pullSacramentProgram;
+export const pushSacrament = pushSacramentProgram;
+
+// ── Health check ──────────────────────────────────────────────────────────────
+export async function testConnection() {
+  const res = await fetch(`${WORKER_URL}/health`);
+  if (!res.ok) throw new Error(`Worker health check failed: ${res.status}`);
+  return res.json();
+}
+
+// ── Prayer List ───────────────────────────────────────────────────────────────
+export async function pullPrayerList() {
   try {
-    const data = await bishopricReq(token, "Links!A:D");
-    return { links: rowsToLinks(data.values || []) };
-  } catch(_) { return { links: [] }; }
+    const r = await bishopricReq("PrayerList!A:E");
+    if (!r.values || r.values.length < 2) return [];
+    return r.values.slice(1).filter(r => r[0]).map((r, i) => ({
+      id: `pl_${i}`, name: r[0]||"", category: r[1]||"",
+      notes: r[2]||"", date: r[3]||"", addedBy: r[4]||"",
+    }));
+  } catch { return []; }
 }
 
-export async function pushBishopricLinks(token, data) {
-  if (!token) throw new Error("Not authenticated");
-  await bishopricReq(token, "Links!A1", "PUT", { values: linksToRows(data) });
-}
-
-export async function pullWardCouncilLinks(token) {
-  if (!WCID() || WCID().includes("YOUR_")) return { links: [] };
+// ── Ward Council Roster ───────────────────────────────────────────────────────
+export async function pullRosterFromWardCouncil() {
   try {
-    const data = await wardCouncilReq(token, "Links!A:D");
-    return { links: rowsToLinks(data.values || []) };
-  } catch(_) { return { links: [] }; }
-}
-
-export async function pushWardCouncilLinks(token, data) {
-  if (!token) throw new Error("Not authenticated");
-  await wardCouncilReq(token, "Links!A1", "PUT", { values: linksToRows(data) });
+    const r = await wcReq("Roster!A:B");
+    if (!r.values || r.values.length < 2) return { roster: [] };
+    return {
+      roster: r.values.slice(1).filter(r => r[0]).map(r => ({
+        role: r[0]||"", name: r[1]||"",
+      })),
+    };
+  } catch { return { roster: [] }; }
 }
