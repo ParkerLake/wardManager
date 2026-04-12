@@ -1,10 +1,10 @@
 {
   "files": {
-    "main.js": "/wardManager/static/js/main.472c32f7.js",
+    "main.js": "/wardManager/static/js/main.cb3dbaa4.js",
     "index.html": "/wardManager/index.html",
-    "main.472c32f7.js.map": "/wardManager/static/js/main.472c32f7.js.map"
+    "main.cb3dbaa4.js.map": "/wardManager/static/js/main.cb3dbaa4.js.map"
   },
   "entrypoints": [
-    "static/js/main.472c32f7.js"
+    "static/js/main.cb3dbaa4.js"
   ]
 }
