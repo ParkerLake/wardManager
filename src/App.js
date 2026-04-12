@@ -1021,7 +1021,7 @@ function MainApp({ user, token, onSignOut }) {
             } catch(e){ notify.error("Save failed: "+e.message,6000); }
             finally { appointmentsDirty.current=false; }
           }}/>}
-        {isAdmin&&tab==="callings"    &&<PipelineTab title="Callings"   stages={CALLING_STAGES}   data={callings}   setData={setCallings}   onStageChange={(item,stage)=>autoCreateAppointments(apptRef.current||[],[...callings.map(c=>c.id===item.id?{...c,stage}:c)],relRef.current||[])} onMutate={async(updated)=>{
+        {isAdmin&&tab==="callings"    &&<PipelineTab title="Callings"   stages={CALLING_STAGES}   data={callings}   setData={setCallings}   onStageChange={(item,stage)=>autoCreateAppointments(apptRef.current||[],[{...item,stage}],[])} onMutate={async(updated)=>{
             callRef.current=updated;
             pipelineDirty.current=true;
             try {
@@ -1031,7 +1031,7 @@ function MainApp({ user, token, onSignOut }) {
             } catch(e){ notify.error("Save failed: "+e.message,6000); }
             finally { pipelineDirty.current=false; }
           }}/>}
-        {isAdmin&&tab==="releasings"  &&<PipelineTab title="Releasings" stages={RELEASING_STAGES} data={releasings} setData={setReleasings} onStageChange={(item,stage)=>autoCreateAppointments(apptRef.current||[],callRef.current||[],[...releasings.map(r=>r.id===item.id?{...r,stage}:r)])} onMutate={async(updated)=>{
+        {isAdmin&&tab==="releasings"  &&<PipelineTab title="Releasings" stages={RELEASING_STAGES} data={releasings} setData={setReleasings} onStageChange={(item,stage)=>autoCreateAppointments(apptRef.current||[],[],[{...item,stage}])} onMutate={async(updated)=>{
             relRef.current=updated;
             pipelineDirty.current=true;
             try {

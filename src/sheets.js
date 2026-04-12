@@ -142,10 +142,28 @@ export async function pullAll() {
 export async function pullSacramentProgram() {
   const r = await sacramentReq("SacramentProgram!A:F");
   if (!r.values || r.values.length < 2) return { sacramentProgram: [] };
-  const rows = r.values.slice(1).map((row, i) => ({
-    id: `sp_${i}`, role: row[0]||"", name: row[1]||"",
-    topic: row[2]||"", hymn: row[3]||"", time: row[4]||"", notes: row[5]||"",
-  }));
+  const hasDate = r.values[0][0] === "Date";
+  const rows = r.values.slice(1).filter(row => row.some(c => c)).map((row, i) => {
+    if (hasDate) {
+      // Format: Date | GlobalOrder | Section | Label | Value | Notes
+      return {
+        id: `sp_${i}`,
+        date: row[0]||"",
+        globalOrder: parseInt(row[1]||i),
+        section: row[2]||"",
+        label: row[3]||"",
+        value: row[4]||"",
+        notes: row[5]||"",
+      };
+    } else {
+      // Legacy format (old Role/Name columns) — map best we can
+      return {
+        id: `sp_${i}`, date: "", globalOrder: i,
+        section: row[0]||"", label: row[1]||"",
+        value: row[2]||"", notes: row[5]||"",
+      };
+    }
+  });
   return { sacramentProgram: rows };
 }
 
@@ -198,8 +216,8 @@ export async function pushWardCouncilMeeting(data) {
 
 export async function pushSacramentProgram(rows) {
   const values = [
-    ["Role", "Name", "Topic", "Hymn", "Time", "Notes"],
-    ...rows.map(r => [r.role||"", r.name||"", r.topic||"", r.hymn||"", r.time||"", r.notes||""]),
+    ["Date", "GlobalOrder", "Section", "Label", "Value", "Notes"],
+    ...rows.map(r => [r.date||"", r.globalOrder??0, r.section||"", r.label||"", r.value||"", r.notes||""]),
   ];
   await clearAndWrite(SSID(), "SacramentProgram!A:F", values);
 }
