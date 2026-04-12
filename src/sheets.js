@@ -9,6 +9,7 @@ const WORKER_URL = "https://ward-manager-sheets.parkerllake.workers.dev";
 const SID  = () => config.SPREADSHEET_ID;
 const SSID = () => config.SACRAMENT_SHEET_ID;
 const WCID = () => config.WARD_COUNCIL_SHEET_ID;
+const PLID = () => config.PRAYER_LIST_SHEET_ID;
 
 async function sheetsReq(sheetId, range, method = "GET", body = null) {
   const params = new URLSearchParams({ spreadsheetId: sheetId, range });
@@ -78,22 +79,26 @@ function rowsToCallings(rows) {
     }));
 }
 
-function membersToRows(data) {
+function notesToRows(data) {
   return [
-    ["Name", "Email", "Phone", "Calling", "Notes"],
-    ...data.map(m => [m.name, m.email||"", m.phone||"", m.calling||"", m.notes||""]),
+    ["ID", "Title", "Body", "Date", "Author"],
+    ...data.map(n => [n.id||"", n.title||"", n.body||"", n.date||"", n.author||""]),
   ];
 }
 
-function rowsToMembers(rows) {
+function rowsToNotes(rows) {
   if (!rows || rows.length < 2) return [];
   return rows.slice(1)
-    .filter(r => r[0])
+    .filter(r => r[0] || r[1] || r[2])
     .map((r, i) => ({
-      id: `m_${i}`, name: r[0]||"", email: r[1]||"",
-      phone: r[2]||"", calling: r[3]||"", notes: r[4]||"",
+      id: r[0] || `n_${i}`, title: r[1]||"",
+      body: r[2]||"", date: r[3]||"", author: r[4]||"",
     }));
 }
+
+// Legacy aliases — kept so any remaining members refs don't break
+const membersToRows = notesToRows;
+const rowsToMembers = rowsToNotes;
 
 function rowsToMeeting(rows) {
   if (!rows || rows.length < 2) return [];
@@ -128,7 +133,7 @@ export async function pullAll() {
     bishopricReq("Appointments!A:F").then(r => rowsToAppointments(r.values)),
     bishopricReq("Callings!A:D").then(r => rowsToCallings(r.values)),
     bishopricReq("Releasings!A:D").then(r => rowsToCallings(r.values)),
-    bishopricReq("Members!A:E").then(r => rowsToMembers(r.values)),
+    bishopricReq("Notes!A:E").then(r => rowsToNotes(r.values)),
     bishopricReq("BishopricMeeting!A:D").then(r => rowsToMeeting(r.values)),
   ]);
   return { appointments: appts, callings, releasings, members, bishopricMeeting: meeting };
@@ -178,7 +183,7 @@ export async function pushAll({ appointments, callings, releasings, members }) {
     clearAndWrite(sid, "Releasings!A:D",   callingsToRows(releasings)),
   ];
   if (members !== undefined) {
-    ops.push(clearAndWrite(sid, "Members!A:E", membersToRows(members)));
+    ops.push(clearAndWrite(sid, "Notes!A:E", notesToRows(members)));
   }
   await Promise.all(ops);
 }
@@ -254,13 +259,24 @@ export async function testConnection() {
 // ── Prayer List ───────────────────────────────────────────────────────────────
 export async function pullPrayerList() {
   try {
-    const r = await bishopricReq("PrayerList!A:E");
+    const plid = PLID();
+    if (!plid || plid.includes("YOUR_")) return [];
+    // Try "Sheet1" first (default tab name), then "PrayerList"
+    let r;
+    try {
+      r = await sheetsReq(plid, "Sheet1!A:E");
+    } catch {
+      r = await sheetsReq(plid, "PrayerList!A:E");
+    }
     if (!r.values || r.values.length < 2) return [];
     return r.values.slice(1).filter(r => r[0]).map((r, i) => ({
       id: `pl_${i}`, name: r[0]||"", category: r[1]||"",
       notes: r[2]||"", date: r[3]||"", addedBy: r[4]||"",
     }));
-  } catch { return []; }
+  } catch(e) {
+    console.error("pullPrayerList error:", e);
+    return [];
+  }
 }
 
 // ── Ward Council Roster ───────────────────────────────────────────────────────

@@ -44,7 +44,7 @@ function nameInitials(name) {
 }
 const PURPOSE_OPTIONS  = ["Annual Youth","Semi-Annual Youth","Calling","Temple Recommend","Mission","Patriarchal Blessing","Ecclesiastical Endorsement","Follow Up","General","Releasing","Set Apart"];
 const AUTO_PULL_MS = 5 * 60 * 1000; // 5 minutes — stays well under Sheets API quota
-const AUTO_PUSH_MS = 10000;
+const AUTO_PUSH_MS = 2500; // Push 2.5s after last change
 
 // ─── Church Style Guide §2.5 Palette ─────────────────────────────────────────
 const C = {
@@ -593,7 +593,7 @@ function MainApp({ user, token, onSignOut }) {
   const isAdminRef = useRef(isAdminEarly);
   useEffect(()=>{ isAdminRef.current = isAdminEarly; },[isAdminEarly]);
 
-  const tokenRef=useRef(token),apptRef=useRef(appointments),callRef=useRef(callings),
+  const tokenRef=useRef(null),apptRef=useRef(appointments),callRef=useRef(callings),
     relRef=useRef(releasings),bmRef=useRef(bishopricMeeting),membRef=useRef(members),rosterRef=useRef(roster),
     wcmRef=useRef(wardCouncilMeeting),
     sacrRef=useRef(sacramentProgram),tabRef=useRef(tab),calendarRef=useRef(calendar),
@@ -602,7 +602,6 @@ function MainApp({ user, token, onSignOut }) {
     pipelineDirty=useRef(false),    // true when callings/releasings have unsaved local changes
     appointmentsDirty=useRef(false); // true when appointments have unsaved local changes
 
-  useEffect(()=>{tokenRef.current=token;},[token]);
   useEffect(()=>{apptRef.current=appointments;},[appointments]);
   useEffect(()=>{callRef.current=callings;},[callings]);
   useEffect(()=>{relRef.current=releasings;},[releasings]);
@@ -758,7 +757,7 @@ function MainApp({ user, token, onSignOut }) {
     const prev=prevTabRef.current;
     // Leaving Sacrament — pull fresh sacrament data
     if(prev==="sacrament"&&tab!=="sacrament"&&pulledRef.current){
-      pullSacrament(tokenRef.current).then(sp=>{
+      pullSacrament().then(sp=>{
         if(sp.sacramentProgram){setSacrament(sp.sacramentProgram);sacrRef.current=sp.sacramentProgram;}
       }).catch(()=>{});
     }
@@ -889,7 +888,7 @@ function MainApp({ user, token, onSignOut }) {
     { id:"links",    label:"Links",    flat:true },
     { id:"admin", label:"Admin", children:[
       {id:"alerts",  label:"Alerts"},
-      {id:"members", label:"Members"},
+      {id:"notes", label:"Notes"},
     ]},
   ] : [
     { id:"ward-council", label:"Ward Council", flat:true },
@@ -1019,25 +1018,10 @@ function MainApp({ user, token, onSignOut }) {
             callRef.current=updated;
             pipelineDirty.current=true;
             try {
-              if(!tokenRef.current) throw new Error("No auth token");
-              const {callingsToRows}=await import("./sheets");
-              const rows = callingsToRows(updated);
-              console.log("[onMutate callings] pushing", updated.length, "rows:", updated.map(c=>c.name));
-              console.log("[onMutate callings] SID=", callRef.current?.length, "token present:", !!tokenRef.current);
-              // Push directly via fetch so we can see the raw response
-              const {default: config} = await import("./config");
-              const sid = config.SPREADSHEET_ID;
-              const url = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/${encodeURIComponent("Callings!A:D")}?valueInputOption=USER_ENTERED`;
-              const res = await fetch(url, {
-                method: "PUT",
-                headers: { Authorization: `Bearer ${tokenRef.current}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ values: rows }),
-              });
-              const json = await res.json();
-              console.log("[onMutate callings] PUT response:", res.status, JSON.stringify(json).slice(0,200));
-              if(!res.ok) throw new Error(`Sheets API ${res.status}: ${JSON.stringify(json)}`);
+              const {pushAll}=await import("./sheets");
+              await pushAll({appointments:apptRef.current,callings:updated,releasings:relRef.current,members:membRef.current});
               setSyncStatus("idle");
-            } catch(e){ console.error("[onMutate callings] FAILED:", e); notify.error("Save failed: "+e.message,6000); }
+            } catch(e){ notify.error("Save failed: "+e.message,6000); }
             finally { pipelineDirty.current=false; }
           }}/>}
         {isAdmin&&tab==="releasings"  &&<PipelineTab title="Releasings" stages={RELEASING_STAGES} data={releasings} setData={setReleasings} onStageChange={(item,stage)=>autoCreateAppointments(apptRef.current||[],callRef.current||[],[...releasings.map(r=>r.id===item.id?{...r,stage}:r)])} onMutate={async(updated)=>{
@@ -1051,9 +1035,9 @@ function MainApp({ user, token, onSignOut }) {
             finally { pipelineDirty.current=false; }
           }}/>}
         {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab}/>}
-        {isAdmin&&tab==="members"     &&<MembersTab  data={members}  setData={setMembers} callings={callings} releasings={releasings}/>}
+        {isAdmin&&tab==="notes"       &&<NotesTab    data={members}  setData={setMembers}/>}
         {isAdmin&&tab==="alerts"      &&<AlertsTab appointments={appointments} callings={callings} releasings={releasings} isMobile={isMobile}/>}
-        {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} tokenRef={tokenRef} isMobile={isMobile}/>}
+        {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} isMobile={isMobile}/>}
         {(isAdmin||isWardCouncil)&&tab==="calendar"&&<CalendarTab calendar={calendar} setCalendar={setCalendar} token={token} isMobile={isMobile}/>}
         {(isAdmin||isWardCouncil)&&tab==="ward-council"&&<WardCouncilTab wardCouncilMeeting={wardCouncilMeeting} setWardCouncilMeeting={setWardCouncilMeeting} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isAdmin={isAdmin}/>}
         {(isAdmin||isWardCouncil)&&tab==="links"&&<LinksTab bishopricLinks={isAdmin?bishopricLinks:null} setBishopricLinks={setBishopricLinks} wcLinks={wcLinks} setWcLinks={setWcLinks} token={token} isAdmin={isAdmin}/>}
@@ -1524,7 +1508,7 @@ function PipelineModal({item,stages,title,onSave,onClose,onDelete}){
 //   onApply(data)      — called with fresh remote data when user applies pending changes
 //   enabled            — false to skip all sync (e.g. ward council user on BM tab)
 
-function useMeetingSync({ getData, saveFn, pullFn, diffFn, tokenRef, onApply, enabled = true }) {
+function useMeetingSync({ getData, saveFn, pullFn, diffFn, onApply, enabled = true }) {
   const [saveStatus,   setSaveStatus]   = useState("saved");   // saved|saving|unsaved|error
   const [pendingCount, setPendingCount] = useState(0);
   const [pendingData,  setPendingData]  = useState(null);      // buffered remote snapshot
@@ -1555,7 +1539,7 @@ function useMeetingSync({ getData, saveFn, pullFn, diffFn, tokenRef, onApply, en
     } finally {
       isSaving.current = false;
     }
-  }, [enabled, saveFn, getData, tokenRef]);
+  }, [enabled, saveFn, getData]);
 
   // ── Mark dirty — track which keys changed, debounce auto-save 2.5s ──
   const markDirty = useCallback((dateItemKey) => {
@@ -1587,7 +1571,7 @@ function useMeetingSync({ getData, saveFn, pullFn, diffFn, tokenRef, onApply, en
     };
     pollTimer.current = setInterval(poll, 2 * 60 * 1000); // 2 min — conserve API quota
     return () => clearInterval(pollTimer.current);
-  }, [enabled, pullFn, diffFn, getData, tokenRef]);
+  }, [enabled, pullFn, diffFn, getData]);
 
   // ── Apply pending — merge remote into local, preserving any unsaved local edits ──
   const applyPending = useCallback(() => {
@@ -1758,9 +1742,6 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   const [showPrayerList, setShowPrayerList] = useState(false);
   const [prayerListData, setPrayerListData] = useState(null);
   const [prayerListLoading, setPrayerListLoading] = useState(false);
-  const tokenRef = useRef(token);
-  useEffect(() => { tokenRef.current = token; }, [token]);
-
   // Keep local bmData in sync with parent (on initial pull)
   useEffect(() => { setBmData(bishopricMeeting); }, [bishopricMeeting]);
 
@@ -2029,7 +2010,6 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
           pendingCount: bmPendingCount, applyPending: bmApplyPending } = useMeetingSync({
     getData:  () => bmDataRef.current,
     saveFn:   async (data) => {
-      if (!tok) return; // skip if token not yet available
       const { pushBishopricMeeting } = await import("./sheets");
       await pushBishopricMeeting(data);
     },
@@ -2039,7 +2019,6 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
       return d.bishopricMeeting || [];
     },
     diffFn:   bmDiff,
-    tokenRef,
     onApply:  (remote) => { setBmData(remote); setBishopricMeeting(remote); },
     enabled:  true,
   });
@@ -3050,8 +3029,6 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
   const [showPrayerList, setShowPrayerList] = useState(false);
   const [prayerListData, setPrayerListData] = useState(null);
   const [prayerListLoading, setPrayerListLoading] = useState(false);
-  const tokenRef = useRef(token);
-  useEffect(() => { tokenRef.current = token; }, [token]);
   useEffect(() => { setWcData(wardCouncilMeeting); }, [wardCouncilMeeting]);
 
   const sundays = getSurroundingSundays();
@@ -3167,7 +3144,6 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
           pendingCount: wcPendingCount, applyPending: wcApplyPending } = useMeetingSync({
     getData:  () => wcDataRef.current,
     saveFn:   async (data) => {
-      if (!tok) return; // skip if token not yet available
       const { pushWardCouncilMeeting } = await import("./sheets");
       await pushWardCouncilMeeting(data);
     },
@@ -3177,7 +3153,6 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
       return d.wardCouncilMeeting || [];
     },
     diffFn:   wcDiff,
-    tokenRef,
     onApply:  (remote) => { setWcData(remote); setWardCouncilMeeting(remote); },
     enabled:  true,
   });
@@ -3668,107 +3643,187 @@ const SECTION_META = {
   "Ordinance":      { color:"#00558F", bg:"#E8F4FD", border:"#49CCE6" },
   "Announcement":   { color:"#53575B", bg:"#F5F3EE", border:"#D5CFBE" },
 };
-function MembersTab({data,setData,callings,releasings}){
-  const[search,setSearch]=useState("");
-  const[showForm,setSF]=useState(false);
-  const[editing,setEditing]=useState(null);
-  const[filter,setFilter]=useState("all"); // all | called | pipeline
+function NotesTab({ data, setData }) {
+  const [search, setSearch]   = useState("");
+  const [showForm, setSF]     = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving]   = useState(false);
 
-  const lc=search.toLowerCase();
-  let filtered=data.filter(m=>
-    m.name.toLowerCase().includes(lc)||
-    (m.calling||"").toLowerCase().includes(lc)||
-    (m.notes||"").toLowerCase().includes(lc)
-  );
+  const lc = search.toLowerCase();
+  const shown = [...data]
+    .filter(n =>
+      (n.title||"").toLowerCase().includes(lc) ||
+      (n.body||"").toLowerCase().includes(lc) ||
+      (n.author||"").toLowerCase().includes(lc)
+    )
+    .sort((a, b) => (b.date || "") > (a.date || "") ? 1 : -1);
 
-  // Enrich members with their active pipeline items
-  const enriched=filtered.map(m=>{
-    const activeCalling  =callings.find(c=>c.name.toLowerCase()===m.name.toLowerCase()&&c.stage!=="Completed");
-    const activeReleasing=releasings.find(r=>r.name.toLowerCase()===m.name.toLowerCase()&&r.stage!=="Completed");
-    return{...m,activeCalling,activeReleasing};
-  });
-
-  const shown=enriched.filter(m=>{
-    if(filter==="called")   return m.calling;
-    if(filter==="pipeline") return m.activeCalling||m.activeReleasing;
-    return true;
-  });
-
-  const save=item=>{
-    if(item.id){setData(d=>d.map(x=>x.id===item.id?item:x));notify.success("Member updated");}
-    else{setData(d=>[...d,{...item,id:`mb_${Date.now()}`}]);notify.success("Member added");}
-    setSF(false);setEditing(null);
+  const save = async (item) => {
+    setSaving(true);
+    const updated = item.id
+      ? data.map(x => x.id === item.id ? item : x)
+      : [...data, { ...item, id: `n_${Date.now()}` }];
+    setData(updated);
+    notify.success(item.id ? "Note updated" : "Note added");
+    setSF(false); setEditing(null); setSaving(false);
   };
-  const del=id=>{setData(d=>d.filter(x=>x.id!==id));notify.info("Member removed");};
-  const open=item=>{setEditing(item);setSF(true);};
 
+  const del = (id) => {
+    setData(d => d.filter(x => x.id !== id));
+    notify.info("Note removed");
+  };
 
-  return(
+  const open = (item) => { setEditing(item); setSF(true); };
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return "";
+    try {
+      return new Date(dateStr + "T12:00:00").toLocaleDateString("default", {
+        month: "short", day: "numeric", year: "numeric"
+      });
+    } catch { return dateStr; }
+  };
+
+  return (
     <div className="animate-in">
-      <HeroBanner title="Members" sub={`${data.length} in pool · ${data.filter(m=>m.calling).length} currently called`}>
-        <button className="btn-primary" style={{background:"rgba(255,255,255,.18)",border:"1.5px solid rgba(255,255,255,.4)"}} onClick={()=>{setEditing(null);setSF(true);}}>
-          <PlusIcon/> Add Member
+      <HeroBanner title="Notes" sub={`${data.length} note${data.length !== 1 ? "s" : ""}`}>
+        <button className="btn-primary"
+          style={{ background:"rgba(255,255,255,.18)", border:"1.5px solid rgba(255,255,255,.4)" }}
+          onClick={() => { setEditing(null); setSF(true); }}>
+          <PlusIcon/> Add Note
         </button>
       </HeroBanner>
 
-      <div style={{display:"flex",gap:12,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
-        <input type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name, calling, or notes…" style={{maxWidth:320}}/>
-        <div style={{display:"flex",gap:6}}>
-          {[["all","All"],["called","Currently Called"],["pipeline","In Pipeline"]].map(([v,l])=>(
-            <button key={v} onClick={()=>setFilter(v)} style={{borderRadius:7,fontSize:12,padding:"5px 13px",cursor:"pointer",border:`1.5px solid ${filter===v?C.blue35:C.border}`,color:filter===v?C.blue35:C.textSecond,background:filter===v?C.surfaceWarm:"transparent",fontWeight:filter===v?700:400,fontFamily:"'Helvetica Neue',Arial,sans-serif",transition:"all .15s"}}>{l}</button>
-          ))}
-        </div>
-        <span style={{fontSize:12,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginLeft:"auto"}}>{shown.length} shown</span>
+      {/* Search */}
+      <div style={{ display:"flex", gap:12, marginBottom:16, alignItems:"center" }}>
+        <input type="search" value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search notes…" style={{ maxWidth:340 }}/>
+        <span style={{ fontSize:12, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+          marginLeft:"auto" }}>{shown.length} shown</span>
       </div>
 
-      {shown.length===0&&(
-        <div style={{textAlign:"center",padding:"60px 24px"}}>
-          <div style={{marginBottom:12,opacity:.3,color:C.textMuted,display:"flex",justifyContent:"center"}}><User size={38}/></div>
-          <div style={{fontFamily:"Georgia,serif",fontSize:17,color:C.textSecond,marginBottom:5}}>{data.length===0?"No members yet":"No results"}</div>
-          <div style={{fontSize:12,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>{data.length===0?"Add members or pull from Sheets":"Try a different search or filter"}</div>
+      {/* Empty state */}
+      {shown.length === 0 && (
+        <div style={{ textAlign:"center", padding:"60px 24px" }}>
+          <div style={{ marginBottom:12, opacity:.3, color:C.textMuted, display:"flex", justifyContent:"center" }}>
+            <ClipboardIcon/>
+          </div>
+          <div style={{ fontFamily:"Georgia,serif", fontSize:17, color:C.textSecond, marginBottom:5 }}>
+            {data.length === 0 ? "No notes yet" : "No results"}
+          </div>
+          <div style={{ fontSize:12, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif" }}>
+            {data.length === 0 ? "Add a note to share with the bishopric" : "Try a different search"}
+          </div>
         </div>
       )}
 
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))",gap:10}}>
-        {shown.map(m=>(
-          <div key={m.id} onClick={()=>open(m)} className="member-row" style={{cursor:"pointer",flexDirection:"column",alignItems:"stretch",gap:0,padding:"14px 16px"}}>
-            <div style={{display:"flex",alignItems:"center",gap:12}}>
-              <div className="member-avatar">{nameInitials(m.name||"?")}</div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontFamily:"Georgia,serif",fontSize:16,color:C.textPrimary,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name}</div>
-                {m.calling&&<div style={{fontSize:12,color:C.blue25,fontStyle:"italic",fontFamily:"Georgia,serif",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.calling}</div>}
-                {m.notes&&<div style={{fontSize:11,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.notes}</div>}
+      {/* Notes grid */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))", gap:12 }}>
+        {shown.map(note => (
+          <div key={note.id} onClick={() => open(note)}
+            style={{ background:C.surfaceWhite, border:`1.5px solid ${C.border}`, borderRadius:12,
+              padding:"16px 18px", cursor:"pointer", transition:"box-shadow .15s, border-color .15s" }}
+            onMouseEnter={e => { e.currentTarget.style.boxShadow="0 2px 12px rgba(0,48,87,.10)"; e.currentTarget.style.borderColor=C.blue25; }}
+            onMouseLeave={e => { e.currentTarget.style.boxShadow="none"; e.currentTarget.style.borderColor=C.border; }}>
+
+            {/* Header */}
+            <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:8 }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontFamily:"Georgia,serif", fontSize:16, color:C.textPrimary,
+                  fontWeight:600, marginBottom:3, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  {note.title || "Untitled"}
+                </div>
+                <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+                  {note.date && (
+                    <span style={{ fontSize:11, color:C.blue25, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                      fontWeight:600 }}>
+                      {formatDate(note.date)}
+                    </span>
+                  )}
+                  {note.author && (
+                    <span style={{ fontSize:11, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif" }}>
+                      {note.author}
+                    </span>
+                  )}
+                </div>
               </div>
-              <button className="btn-del" onClick={e=>{e.stopPropagation();del(m.id);}} style={{flexShrink:0}}><XIcon/></button>
+              <button onClick={e => { e.stopPropagation(); del(note.id); }}
+                style={{ background:"none", border:`1px solid ${C.borderLight}`, borderRadius:5,
+                  padding:"3px 7px", cursor:"pointer", color:C.textLight, display:"flex",
+                  alignItems:"center", flexShrink:0, marginLeft:8 }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor=C.red15; e.currentTarget.style.color=C.red15; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor=C.borderLight; e.currentTarget.style.color=C.textLight; }}>
+                <X size={12}/>
+              </button>
             </div>
-            {(m.activeCalling||m.activeReleasing)&&(
-              <div style={{display:"flex",gap:6,marginTop:10,paddingTop:8,borderTop:`1px solid ${C.borderLight}`,flexWrap:"wrap"}}>
-                {m.activeCalling&&(()=>{const st=PIPELINE_STAGE_STYLE[m.activeCalling.stage]||{};return<span className="chip" style={{background:st.bg,borderColor:st.border,color:st.text,fontSize:10}}><span style={{width:5,height:5,borderRadius:"50%",background:st.dot}}/>{m.activeCalling.stage} (calling)</span>;})()}
-                {m.activeReleasing&&(()=>{const st=PIPELINE_STAGE_STYLE[m.activeReleasing.stage]||{};return<span className="chip" style={{background:st.bg,borderColor:st.border,color:st.text,fontSize:10}}><span style={{width:5,height:5,borderRadius:"50%",background:st.dot}}/>{m.activeReleasing.stage} (releasing)</span>;})()}
+
+            {/* Body preview */}
+            {note.body && (
+              <div style={{ fontSize:13, color:C.textSecond, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                lineHeight:1.5, display:"-webkit-box", WebkitLineClamp:3, WebkitBoxOrient:"vertical",
+                overflow:"hidden" }}>
+                {note.body}
               </div>
             )}
           </div>
         ))}
       </div>
 
-      {showForm&&<MemberModal item={editing} onSave={save} onClose={()=>{setSF(false);setEditing(null);}}/>}
+      {showForm && (
+        <NoteModal item={editing} saving={saving} onSave={save}
+          onClose={() => { setSF(false); setEditing(null); }}
+          onDelete={editing ? () => { del(editing.id); setSF(false); setEditing(null); } : null}
+        />
+      )}
     </div>
   );
 }
 
-function MemberModal({item,onSave,onClose}){
-  const[f,setF]=useState(item||{name:"",calling:"",phone:"",email:"",notes:""});
-  const s=(k,v)=>setF(x=>({...x,[k]:v}));
-  return<ModalShell onClose={onClose} title={f.name||"Member"} subtitle={item?"Edit Member":"New Member"}>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-      <FormRow label="Full Name" full><input value={f.name} onChange={e=>s("name",e.target.value)} placeholder="First Last"/></FormRow>
-      <FormRow label="Current Calling (if any)" full><input value={f.calling||""} onChange={e=>s("calling",e.target.value)} placeholder="e.g. Primary Teacher"/></FormRow>
-      <FormRow label="Phone"><input value={f.phone||""} onChange={e=>s("phone",e.target.value)} placeholder="+1 555 000 0000"/></FormRow>
-      <FormRow label="Email"><input value={f.email||""} onChange={e=>s("email",e.target.value)} placeholder="member@email.com"/></FormRow>
-      <FormRow label="Notes" full><textarea rows={3} value={f.notes||""} onChange={e=>s("notes",e.target.value)} placeholder="Additional notes…" style={{resize:"vertical"}}/></FormRow>
-    </div>
-    <ModalFooter onClose={onClose} onSave={()=>onSave(f)} saveLabel="Save Member"/>
-  </ModalShell>;
+
+function NoteModal({ item, saving, onSave, onClose, onDelete }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [f, setF] = useState(item || { title:"", body:"", date:today, author:"" });
+  const s = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const isExisting = !!(item?.id);
+
+  return (
+    <ModalShell onClose={onClose}
+      title={f.title || "Note"}
+      subtitle={isExisting ? "Edit Note" : "New Note"}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+        <FormRow label="Title" full>
+          <input value={f.title} onChange={e => s("title", e.target.value)}
+            placeholder="Note title…" autoFocus/>
+        </FormRow>
+        <FormRow label="Date">
+          <input type="date" value={f.date||today} onChange={e => s("date", e.target.value)}/>
+        </FormRow>
+        <FormRow label="Author">
+          <input value={f.author||""} onChange={e => s("author", e.target.value)}
+            placeholder="Your name…"/>
+        </FormRow>
+        <FormRow label="Note" full>
+          <textarea rows={6} value={f.body||""}
+            onChange={e => s("body", e.target.value)}
+            placeholder="Write your note here…"
+            style={{ resize:"vertical" }}/>
+        </FormRow>
+      </div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:24,
+        paddingTop:16, borderTop:`1px solid ${C.borderLight}` }}>
+        {isExisting && onDelete ? (
+          <button onClick={onDelete}
+            style={{ background:"none", border:`1.5px solid ${C.red15}`, color:C.red15, borderRadius:8,
+              padding:"8px 16px", fontSize:13, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+              fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
+            <X size={13}/> Delete
+          </button>
+        ) : <div/>}
+        <ModalFooter onClose={onClose} onSave={() => onSave(f)}
+          saving={saving} saveLabel={isExisting ? "Save Note" : "Add Note"} inline/>
+      </div>
+    </ModalShell>
+  );
 }
 
 
@@ -4036,7 +4091,7 @@ function SettingsModal({token,onTestConn,connStatus,connMsg,roster,setRoster,onC
                 {tab:"Callings",         cols:"Calling | Name | Stage | Notes"},
                 {tab:"Releasings",       cols:"Calling | Name | Stage | Notes"},
                 {tab:"BishopricMeeting", cols:"Date | ItemKey | Assignee | Done | Notes | CustomLabel | SpiritualToggle"},
-                {tab:"Members",          cols:"Name | Calling | Phone | Email | Notes"},
+                {tab:"Notes",            cols:"ID | Title | Body | Date | Author"},
                 {tab:"Roster",           cols:"Role | Name"},
                 {tab:"Links",            cols:"ID | Name | URL | Description"},
               ]
@@ -4447,7 +4502,7 @@ ${preview.length} record${preview.length===1?"":"s"} · ${source} · Ward Manage
 }
 
 
-function SacramentTab({ data, setData, saveFn, pullFn, tokenRef, isMobile=false }) {
+function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false }) {
   const allDates = [...new Set(data.map(r=>r.date).filter(Boolean))].sort().reverse();
   // Always default to the upcoming Sunday (matches Bishopric tab behaviour)
   const [activeDate, setActiveDate] = useState(nextSunday);
@@ -4467,18 +4522,15 @@ function SacramentTab({ data, setData, saveFn, pullFn, tokenRef, isMobile=false 
     }).length;
   }, [activeDate]);
 
-  const sacrTokenRef = tokenRef || { current: "" };
-
   const sacrDataRef = useRef(data);
   useEffect(() => { sacrDataRef.current = data; }, [data]);
 
   const { markDirty: sacrMarkDirty, doSave, saveStatus: sacrSaveStatus,
           pendingCount: sacrPendingCount, applyPending: sacrApplyPending } = useMeetingSync({
     getData:  () => sacrDataRef.current,
-    saveFn:   async (tok, d) => { if (saveFn) await saveFn(d); },
+    saveFn:   async (data) => { if (saveFn) await saveFn(data); },
     pullFn:   pullFn || null,
     diffFn:   sacrDiff,
-    tokenRef: sacrTokenRef,
     onApply:  (remote) => setData(remote),
     enabled:  true,
   });
@@ -4659,7 +4711,12 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
   const dragItem = useRef(null);
   const dragOver = useRef(null);
   const [dragIdx, setDragIdx] = useState(null);
+  // Touch drag state
+  const touchStartY = useRef(null);
+  const touchItemIdx = useRef(null);
+  const rowRefs = useRef([]);
 
+  // ── Desktop mouse drag ──
   const handleDragStart = (e, idx) => {
     dragItem.current = idx;
     setDragIdx(idx);
@@ -4681,19 +4738,66 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
     dragOver.current = idx;
   };
 
+  // ── Mobile touch drag ──
+  const handleTouchStart = (e, idx) => {
+    touchStartY.current = e.touches[0].clientY;
+    touchItemIdx.current = idx;
+    dragItem.current = idx;
+    setDragIdx(idx);
+  };
+  const handleTouchMove = (e) => {
+    e.preventDefault(); // Prevent page scroll while dragging
+    const y = e.touches[0].clientY;
+    // Find which row we're hovering over based on Y position
+    let overIdx = null;
+    rowRefs.current.forEach((ref, i) => {
+      if (!ref) return;
+      const rect = ref.getBoundingClientRect();
+      if (y >= rect.top && y <= rect.bottom) overIdx = i;
+    });
+    if (overIdx !== null) dragOver.current = overIdx;
+  };
+  const handleTouchEnd = () => {
+    setDragIdx(null);
+    if (dragItem.current === null || dragOver.current === null || dragItem.current === dragOver.current) {
+      dragItem.current = null; dragOver.current = null; return;
+    }
+    const next = [...items];
+    const [moved] = next.splice(dragItem.current, 1);
+    next.splice(dragOver.current, 0, moved);
+    onReorder(next.map((item, i) => ({ ...item, globalOrder: i })));
+    dragItem.current = null; dragOver.current = null;
+  };
+
   return (
     <div>
       {items.map((item, idx) => {
         const meta = SECTION_META[item.section]||{icon:"•",color:C.textPrimary,bg:C.surfaceWarm,border:C.border};
         const isDragging = dragIdx === idx;
         return isMobile ? (
-            /* Mobile card layout */
-            <div key={item.id} style={{borderBottom:`1px solid ${C.borderLight}`,padding:"12px 14px",background:"transparent"}}>
+            /* Mobile card layout with touch drag */
+            <div key={item.id}
+              ref={el => rowRefs.current[idx] = el}
+              style={{borderBottom:`1px solid ${C.borderLight}`,padding:"12px 14px",
+                background: dragIdx === idx ? C.surfaceWarm : "transparent",
+                opacity: dragIdx === idx ? 0.5 : 1,
+                transition:"background .1s,opacity .1s"}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                <span style={{fontSize:11,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                  background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:10,padding:"2px 8px"}}>
-                  {item.section}
-                </span>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  {/* Touch drag handle */}
+                  <div
+                    onTouchStart={e=>handleTouchStart(e,idx)}
+                    onTouchMove={handleTouchMove}
+                    onTouchEnd={handleTouchEnd}
+                    style={{color:C.textLight,padding:"4px 6px",cursor:"grab",display:"flex",
+                      alignItems:"center",touchAction:"none",userSelect:"none"}}>
+                    <DragHandleIcon/>
+                  </div>
+                  <span style={{fontSize:11,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                    background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:10,padding:"2px 8px"}}>
+                    {item.section}
+                  </span>
+                </div>
                 <button onClick={()=>onDelete(item.id)} style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"4px",display:"flex",alignItems:"center"}}>
                   <XIcon/>
                 </button>
