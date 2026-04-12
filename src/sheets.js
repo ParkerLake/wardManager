@@ -270,7 +270,7 @@ export async function pullPrayerList() {
     }
     if (!r.values || r.values.length < 2) return [];
     return r.values.slice(1).filter(r => r[0]).map((r, i) => ({
-      id: `pl_${i}`, name: r[0]||"", category: r[1]||"",
+      id: `pl_${i}`, category: r[0]||"", name: r[1]||"",
       notes: r[2]||"", date: r[3]||"", addedBy: r[4]||"",
     }));
   } catch(e) {

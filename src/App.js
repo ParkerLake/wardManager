@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Plus, X, LayoutList, Columns2, GripVertical, Printer, Save,
+import { Plus, X, ChevronUp, ChevronDown, LayoutList, Columns2, GripVertical, Printer, Save,
   User, HandMetal, Music2, Piano, Mic2, Sparkles, Megaphone,
   ClipboardList, Plane, BookOpen, Calendar, Tag, Star,
   FileText, Bell, Lock, Building2, RefreshCw,
@@ -1847,15 +1847,16 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   })();
 
   // Open prayer list modal — fetch from separate sheet
-  const openPrayerList = async () => {
+  const openPrayerList = async (force=false) => {
     setShowPrayerList(true);
-    if (prayerListData !== null) return; // already loaded
+    if (!force && prayerListData !== null) return; // already loaded
     const plid = config.PRAYER_LIST_SHEET_ID;
     if (!plid || plid.includes("YOUR_")) {
       setPrayerListData([]);
       return;
     }
     setPrayerListLoading(true);
+    setPrayerListData(null); // clear while reloading
     try {
       const { pullPrayerList } = await import("./sheets");
       const data = await pullPrayerList();
@@ -2512,7 +2513,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
           loading={prayerListLoading}
           sheetUrl={config.PRAYER_LIST_SHEET_URL}
           onClose={() => setShowPrayerList(false)}
-          onRefresh={() => { setPrayerListData(null); openPrayerList(); }}
+          onRefresh={() => openPrayerList(true)}
         />
       )}
 
@@ -2613,22 +2614,21 @@ function PrayerListModal({ data, loading, sheetUrl, onClose, onRefresh }) {
 
           {/* Grouped list */}
           {!isNotConfigured && !loading && data && totalCount > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
               {categories.map(cat => (
                 <div key={cat}>
-                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".1em",
-                    textTransform: "uppercase", color: C.blue35,
-                    fontFamily: "'Helvetica Neue',Arial,sans-serif",
-                    marginBottom: 8, paddingBottom: 6,
-                    borderBottom: `1px solid ${C.borderLight}` }}>{cat}</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {/* Category heading */}
+                  <div style={{ fontFamily: "Georgia,serif", fontSize: 15, fontWeight: 600,
+                    color: C.textPrimary, marginBottom: 8 }}>
+                    {cat}
+                  </div>
+                  {/* Names — plain list, indented */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2,
+                    paddingLeft: 12, borderLeft: `2px solid ${C.blue25}` }}>
                     {grouped[cat].map((name, i) => (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10,
-                        padding: "6px 12px", background: C.surfaceWarm, borderRadius: 7 }}>
-                        <div style={{ width: 5, height: 5, borderRadius: "50%",
-                          background: C.blue25, flexShrink: 0 }}/>
-                        <span style={{ fontSize: 14, fontFamily: "Georgia,serif",
-                          color: C.textPrimary }}>{name}</span>
+                      <div key={i} style={{ fontSize: 14, fontFamily: "'Helvetica Neue',Arial,sans-serif",
+                        color: C.textSecond, padding: "3px 0", lineHeight: 1.4 }}>
+                        {name}
                       </div>
                     ))}
                   </div>
@@ -3578,13 +3578,18 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
             ) : !prayerListData || prayerListData.length === 0 ? (
               <div style={{ textAlign: "center", padding: "24px 0", color: C.textMuted, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontSize: 13 }}>No prayer list data found</div>
             ) : (
-              <div style={{ overflowY: "auto" }}>
+              <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 20 }}>
                 {Object.entries(prayerListData.reduce((acc, item) => { (acc[item.category] = acc[item.category] || []).push(item); return acc; }, {})).map(([cat, items]) => (
-                  <div key={cat} style={{ marginBottom: 16 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: C.textMuted, fontFamily: "'Helvetica Neue',Arial,sans-serif", marginBottom: 6 }}>{cat}</div>
-                    {items.map((item, i) => (
-                      <div key={i} style={{ fontSize: 14, fontFamily: "Georgia,serif", color: C.textPrimary, paddingLeft: 8, marginBottom: 4 }}>{item.name}</div>
-                    ))}
+                  <div key={cat}>
+                    <div style={{ fontFamily: "Georgia,serif", fontSize: 15, fontWeight: 600,
+                      color: C.textPrimary, marginBottom: 8 }}>{cat}</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2,
+                      paddingLeft: 12, borderLeft: `2px solid ${C.blue25}` }}>
+                      {items.map((item, i) => (
+                        <div key={i} style={{ fontSize: 14, fontFamily: "'Helvetica Neue',Arial,sans-serif",
+                          color: C.textSecond, padding: "3px 0", lineHeight: 1.4 }}>{item.name}</div>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -4660,7 +4665,7 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false }) {
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
             <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
             <div style={{fontSize:11,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",fontWeight:600,letterSpacing:".06em",textTransform:"uppercase"}}>
-              <GripVertical size={12} style={{display:"inline",verticalAlign:"middle",marginRight:4}}/> Drag rows to reorder
+              <GripVertical size={12} style={{display:"inline",verticalAlign:"middle",marginRight:4}}/> {isMobile ? "Use ↑↓ buttons to reorder" : "Drag rows to reorder"}
             </div>
             <MeetingSyncBar saveStatus={sacrSaveStatus} pendingCount={sacrPendingCount}
               onApply={sacrApplyPending} onSave={doSave}/>
@@ -4796,92 +4801,132 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
       {items.map((item, idx) => {
         const meta = SECTION_META[item.section]||{icon:"•",color:C.textPrimary,bg:C.surfaceWarm,border:C.border};
         const isDragging = dragIdx === idx;
-        return isMobile ? (
-            /* Mobile card layout with touch drag */
-            <div key={item.id}
-              ref={el => { rowRefs.current[idx] = el; }}
-              style={{borderBottom:`1px solid ${C.borderLight}`,padding:"12px 14px",
-                background: dragIdx === idx ? C.surfaceWarm : "transparent",
-                opacity: dragIdx === idx ? 0.5 : 1,
-                transition:"background .1s,opacity .1s"}}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  {/* Touch drag handle — uses native non-passive listener */}
-                  <div
-                    ref={el => attachTouchHandlers(el, idx)}
-                    style={{color:C.textLight,padding:"12px 8px",cursor:"grab",display:"flex",
-                      alignItems:"center",touchAction:"none",userSelect:"none"}}>
-                    <DragHandleIcon/>
-                  </div>
-                  <span style={{fontSize:11,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                    background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:10,padding:"2px 8px"}}>
-                    {item.section}
-                  </span>
-                </div>
-                <button onClick={()=>onDelete(item.id)} style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"4px",display:"flex",alignItems:"center"}}>
-                  <XIcon/>
-                </button>
-              </div>
-              <input value={item.label} onChange={e=>onUpdate(item.id,"label",e.target.value)} placeholder="Label"
-                style={{width:"100%",fontSize:12,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                  border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"6px 10px",marginBottom:6,background:C.surfaceWarm,boxSizing:"border-box"}}/>
-              <input value={item.value} onChange={e=>onUpdate(item.id,"value",e.target.value)} placeholder={placeholderForLabel(item.label)}
-                style={{width:"100%",fontSize:14,fontFamily:"Georgia,serif",color:C.textPrimary,
-                  border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"8px 10px",marginBottom:6,background:"#fff",boxSizing:"border-box"}}/>
-              <input value={item.notes} onChange={e=>onUpdate(item.id,"notes",e.target.value)} placeholder="Notes…"
-                style={{width:"100%",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted,
-                  border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"6px 10px",background:C.surfaceWarm,boxSizing:"border-box"}}/>
-            </div>
-          ) : (
-            /* Desktop row layout */
+        return (
+            /* Unified layout — up/down arrows for touch, drag-and-drop for mouse */
             <div key={item.id}
               draggable
               onDragStart={e=>handleDragStart(e,idx)}
               onDragEnd={handleDragEnd}
               onDragOver={e=>handleDragOver(e,idx)}
               style={{
-                display:"grid",gridTemplateColumns:"32px 150px 1fr 1fr 180px 32px",
-                gap:0,alignItems:"center",
                 borderBottom:`1px solid ${C.borderLight}`,
-                padding:"7px 16px",
-                opacity: isDragging ? 0.4 : 1,
-                background: isDragging ? C.surfaceWarm : "transparent",
+                padding: isMobile ? "12px 14px" : "7px 16px",
+                opacity: dragIdx === idx ? 0.4 : 1,
+                background: dragIdx === idx ? C.surfaceWarm : "transparent",
                 transition:"background .1s",
                 cursor:"grab",
               }}
-              onMouseEnter={e=>{ if(!isDragging) e.currentTarget.style.background=C.surfaceWarm; }}
-              onMouseLeave={e=>{ if(!isDragging) e.currentTarget.style.background="transparent"; }}
+              onMouseEnter={e=>{ if(dragIdx===null) e.currentTarget.style.background=C.surfaceWarm; }}
+              onMouseLeave={e=>{ if(dragIdx===null) e.currentTarget.style.background="transparent"; }}
             >
-              <div style={{color:C.textLight,display:"flex",alignItems:"center",cursor:"grab",paddingRight:6}}>
-                <DragHandleIcon/>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:5,paddingRight:8}}>
-                <span style={{fontSize:13}}>{meta.icon}</span>
-                <span style={{fontSize:11,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                  background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:10,padding:"1px 7px",whiteSpace:"nowrap"}}>
-                  {item.section}
-                </span>
-              </div>
-              <input value={item.label} onChange={e=>onUpdate(item.id,"label",e.target.value)} placeholder="Label"
-                style={{border:"none",background:"transparent",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                  fontWeight:600,color:meta.color,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
-                onFocus={e=>e.target.style.background=meta.bg}
-                onBlur={e=>e.target.style.background="transparent"}/>
-              <input value={item.value} onChange={e=>onUpdate(item.id,"value",e.target.value)} placeholder={placeholderForLabel(item.label)}
-                style={{border:"none",background:"transparent",fontSize:13,fontFamily:"Georgia,serif",color:C.textPrimary,
-                  padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
-                onFocus={e=>e.target.style.background=C.surfaceWarm}
-                onBlur={e=>e.target.style.background="transparent"}/>
-              <input value={item.notes} onChange={e=>onUpdate(item.id,"notes",e.target.value)} placeholder="Notes..."
-                style={{border:"none",background:"transparent",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-                  color:C.textMuted,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
-                onFocus={e=>e.target.style.background=C.surfaceWarm}
-                onBlur={e=>e.target.style.background="transparent"}/>
-              <button onClick={()=>onDelete(item.id)} style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"4px",borderRadius:4,display:"flex",alignItems:"center"}}
-                onMouseEnter={e=>e.currentTarget.style.color=C.red15}
-                onMouseLeave={e=>e.currentTarget.style.color=C.textLight}>
-                <XIcon/>
-              </button>
+              {isMobile ? (
+                /* Mobile: stacked card with up/down buttons */
+                <>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                        <button disabled={idx===0} onClick={()=>{
+                          if(idx===0) return;
+                          const next=[...items];
+                          [next[idx-1],next[idx]]=[next[idx],next[idx-1]];
+                          onReorder(next.map((it,i)=>({...it,globalOrder:i})));
+                        }} style={{background:"none",border:`1px solid ${C.borderLight}`,borderRadius:4,
+                          width:28,height:24,cursor:idx===0?"not-allowed":"pointer",
+                          opacity:idx===0?.3:1,display:"flex",alignItems:"center",justifyContent:"center",color:C.textSecond}}>
+                          <ChevronUp size={12}/>
+                        </button>
+                        <button disabled={idx===items.length-1} onClick={()=>{
+                          if(idx===items.length-1) return;
+                          const next=[...items];
+                          [next[idx],next[idx+1]]=[next[idx+1],next[idx]];
+                          onReorder(next.map((it,i)=>({...it,globalOrder:i})));
+                        }} style={{background:"none",border:`1px solid ${C.borderLight}`,borderRadius:4,
+                          width:28,height:24,cursor:idx===items.length-1?"not-allowed":"pointer",
+                          opacity:idx===items.length-1?.3:1,display:"flex",alignItems:"center",justifyContent:"center",color:C.textSecond}}>
+                          <ChevronDown size={12}/>
+                        </button>
+                      </div>
+                      <span style={{fontSize:11,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                        background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:10,padding:"2px 8px"}}>
+                        {item.section}
+                      </span>
+                    </div>
+                    <button onClick={()=>onDelete(item.id)}
+                      style={{background:"none",border:`1px solid ${C.borderLight}`,borderRadius:5,
+                        padding:"6px 8px",cursor:"pointer",color:C.textLight,display:"flex",alignItems:"center"}}
+                      onMouseEnter={e=>{e.currentTarget.style.borderColor=C.red15;e.currentTarget.style.color=C.red15;}}
+                      onMouseLeave={e=>{e.currentTarget.style.borderColor=C.borderLight;e.currentTarget.style.color=C.textLight;}}>
+                      <X size={12}/>
+                    </button>
+                  </div>
+                  <input value={item.label} onChange={e=>onUpdate(item.id,"label",e.target.value)} placeholder="Label"
+                    style={{width:"100%",fontSize:12,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                      border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"6px 10px",marginBottom:6,background:C.surfaceWarm,boxSizing:"border-box"}}/>
+                  <input value={item.value} onChange={e=>onUpdate(item.id,"value",e.target.value)} placeholder={placeholderForLabel(item.label)}
+                    style={{width:"100%",fontSize:14,fontFamily:"Georgia,serif",color:C.textPrimary,
+                      border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"8px 10px",marginBottom:6,background:"#fff",boxSizing:"border-box"}}/>
+                  <input value={item.notes} onChange={e=>onUpdate(item.id,"notes",e.target.value)} placeholder="Notes…"
+                    style={{width:"100%",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted,
+                      border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"6px 10px",background:C.surfaceWarm,boxSizing:"border-box"}}/>
+                </>
+              ) : (
+                /* Desktop: grid row with drag handle + up/down arrows */
+                <div style={{display:"grid",gridTemplateColumns:"32px 28px 150px 1fr 1fr 180px 32px",
+                  gap:0,alignItems:"center"}}>
+                  <div style={{color:C.textLight,display:"flex",alignItems:"center",cursor:"grab",paddingRight:6}}>
+                    <DragHandleIcon/>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:2,paddingRight:4}}>
+                    <button disabled={idx===0} onClick={e=>{e.stopPropagation();
+                      if(idx===0) return;
+                      const next=[...items];
+                      [next[idx-1],next[idx]]=[next[idx],next[idx-1]];
+                      onReorder(next.map((it,i)=>({...it,globalOrder:i})));
+                    }} style={{background:"none",border:`1px solid ${C.borderLight}`,borderRadius:3,
+                      width:22,height:18,cursor:idx===0?"not-allowed":"pointer",
+                      opacity:idx===0?.3:1,display:"flex",alignItems:"center",justifyContent:"center",color:C.textSecond,padding:0}}>
+                      <ChevronUp size={10}/>
+                    </button>
+                    <button disabled={idx===items.length-1} onClick={e=>{e.stopPropagation();
+                      if(idx===items.length-1) return;
+                      const next=[...items];
+                      [next[idx],next[idx+1]]=[next[idx+1],next[idx]];
+                      onReorder(next.map((it,i)=>({...it,globalOrder:i})));
+                    }} style={{background:"none",border:`1px solid ${C.borderLight}`,borderRadius:3,
+                      width:22,height:18,cursor:idx===items.length-1?"not-allowed":"pointer",
+                      opacity:idx===items.length-1?.3:1,display:"flex",alignItems:"center",justifyContent:"center",color:C.textSecond,padding:0}}>
+                      <ChevronDown size={10}/>
+                    </button>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:5,paddingRight:8}}>
+                    <span style={{fontSize:13}}>{meta.icon}</span>
+                    <span style={{fontSize:11,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                      background:meta.bg,border:`1px solid ${meta.border}`,borderRadius:10,padding:"1px 7px",whiteSpace:"nowrap"}}>
+                      {item.section}
+                    </span>
+                  </div>
+                  <input value={item.label} onChange={e=>onUpdate(item.id,"label",e.target.value)} placeholder="Label"
+                    style={{border:"none",background:"transparent",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                      fontWeight:600,color:meta.color,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
+                    onFocus={e=>e.target.style.background=meta.bg}
+                    onBlur={e=>e.target.style.background="transparent"}/>
+                  <input value={item.value} onChange={e=>onUpdate(item.id,"value",e.target.value)} placeholder={placeholderForLabel(item.label)}
+                    style={{border:"none",background:"transparent",fontSize:13,fontFamily:"Georgia,serif",color:C.textPrimary,
+                      padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
+                    onFocus={e=>e.target.style.background=C.surfaceWarm}
+                    onBlur={e=>e.target.style.background="transparent"}/>
+                  <input value={item.notes} onChange={e=>onUpdate(item.id,"notes",e.target.value)} placeholder="Notes..."
+                    style={{border:"none",background:"transparent",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                      color:C.textMuted,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
+                    onFocus={e=>e.target.style.background=C.surfaceWarm}
+                    onBlur={e=>e.target.style.background="transparent"}/>
+                  <button onClick={()=>onDelete(item.id)} style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"4px",borderRadius:4,display:"flex",alignItems:"center"}}
+                    onMouseEnter={e=>e.currentTarget.style.color=C.red15}
+                    onMouseLeave={e=>e.currentTarget.style.color=C.textLight}>
+                    <XIcon/>
+                  </button>
+                </div>
+              )}
             </div>
         );
       })}
