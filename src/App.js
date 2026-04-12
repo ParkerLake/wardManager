@@ -599,8 +599,12 @@ function MainApp({ user, token, onSignOut }) {
     sacrRef=useRef(sacramentProgram),tabRef=useRef(tab),calendarRef=useRef(calendar),
     pulledRef=useRef(hasPulled),pushTimer=useRef(null),pushing=useRef(false),
     autoApptGuard=useRef(null), // stores last-processed callings+releasings signature
-    pipelineDirty=useRef(false),    // true when callings/releasings have unsaved local changes
-    appointmentsDirty=useRef(false); // true when appointments have unsaved local changes
+    pipelineDirty=useRef(false),       // true when callings/releasings have unsaved local changes
+    appointmentsDirty=useRef(false),   // true when appointments have unsaved local changes
+    bmDirty=useRef(false),             // true when bishopric meeting has unsaved local changes
+    wcDirty=useRef(false),             // true when ward council meeting has unsaved local changes
+    sacrDirty=useRef(false),           // true when sacrament program has unsaved local changes
+    calendarDirty=useRef(false);       // true when calendar has unsaved local changes
 
   useEffect(()=>{apptRef.current=appointments;},[appointments]);
   useEffect(()=>{callRef.current=callings;},[callings]);
@@ -650,13 +654,13 @@ function MainApp({ user, token, onSignOut }) {
           const d = await pullAll();
           if(!appointmentsDirty.current) setAppts(d.appointments);
           if(!pipelineDirty.current){ setCallings(d.callings); setReleasings(d.releasings); }
-          setBishopricMeeting(d.bishopricMeeting||[]);
+          if(!bmDirty.current) setBishopricMeeting(d.bishopricMeeting||[]);
           if(d.members) setMembers(d.members);
           if(d.roster) setRoster(d.roster);
           // Sacrament (non-blocking)
           try {
             const sp = await pullSacrament();
-            if(sp.sacramentProgram){ setSacrament(sp.sacramentProgram); sacrRef.current=sp.sacramentProgram; }
+            if(sp.sacramentProgram && !sacrDirty.current){ setSacrament(sp.sacramentProgram); sacrRef.current=sp.sacramentProgram; }
           } catch(e) { /* sacrament sheet not yet configured */ }
         }
       }
@@ -668,7 +672,7 @@ function MainApp({ user, token, onSignOut }) {
           // Only pull WCM for ward council users (admins use useMeetingSync)
           if(!isAdminRef.current) {
             const wc = await pullWardCouncilMeeting();
-            if(wc.wardCouncilMeeting){ setWardCouncilMeeting(wc.wardCouncilMeeting); wcmRef.current=wc.wardCouncilMeeting; }
+            if(wc.wardCouncilMeeting && !wcDirty.current){ setWardCouncilMeeting(wc.wardCouncilMeeting); wcmRef.current=wc.wardCouncilMeeting; }
           }
         } else {
           const [cp, wc, ros] = await Promise.all([
@@ -676,8 +680,8 @@ function MainApp({ user, token, onSignOut }) {
             pullWardCouncilMeeting(),
             pullRosterFromWardCouncil(),
           ]);
-          if(cp.calendar){ setCalendar(cp.calendar); calendarRef.current=cp.calendar; }
-          if(wc.wardCouncilMeeting){ setWardCouncilMeeting(wc.wardCouncilMeeting); wcmRef.current=wc.wardCouncilMeeting; }
+          if(cp.calendar && !calendarDirty.current){ setCalendar(cp.calendar); calendarRef.current=cp.calendar; }
+          if(wc.wardCouncilMeeting && !wcDirty.current){ setWardCouncilMeeting(wc.wardCouncilMeeting); wcmRef.current=wc.wardCouncilMeeting; }
           if(ros.roster?.length){ setRoster(ros.roster); rosterRef.current=ros.roster; }
           // Pull links for both sheets
           try {
@@ -1041,7 +1045,7 @@ function MainApp({ user, token, onSignOut }) {
         {isAdmin&&tab==="notes"       &&<NotesTab    data={members}  setData={setMembers}/>}
         {isAdmin&&tab==="alerts"      &&<AlertsTab appointments={appointments} callings={callings} releasings={releasings} isMobile={isMobile}/>}
         {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} isMobile={isMobile}/>}
-        {(isAdmin||isWardCouncil)&&tab==="calendar"&&<CalendarTab calendar={calendar} setCalendar={setCalendar} token={token} isMobile={isMobile}/>}
+        {(isAdmin||isWardCouncil)&&tab==="calendar"&&<CalendarTab calendar={calendar} setCalendar={setCalendar} token={token} isMobile={isMobile} onSaveStart={()=>{calendarDirty.current=true;}} onSaveEnd={()=>{calendarDirty.current=false;}}/>}
         {(isAdmin||isWardCouncil)&&tab==="ward-council"&&<WardCouncilTab wardCouncilMeeting={wardCouncilMeeting} setWardCouncilMeeting={setWardCouncilMeeting} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isAdmin={isAdmin}/>}
         {(isAdmin||isWardCouncil)&&tab==="links"&&<LinksTab bishopricLinks={isAdmin?bishopricLinks:null} setBishopricLinks={setBishopricLinks} wcLinks={wcLinks} setWcLinks={setWcLinks} token={token} isAdmin={isAdmin}/>}
         {!isAdmin&&!isWardCouncil&&<UnauthorizedView/>}
@@ -1580,25 +1584,28 @@ function useMeetingSync({ getData, saveFn, pullFn, diffFn, onApply, enabled = tr
   const applyPending = useCallback(() => {
     if (!pendingData) return;
     const dirty = dirtyKeysRef.current;
-    if (dirty.size === 0) {
-      // No local unsaved edits — safe to replace entirely
-      onApply(pendingData);
-    } else {
-      // Merge: keep locally-dirty rows, take remote for everything else
+    const timeSinceEdit = Date.now() - lastEditRef.current;
+
+    // If there are unsaved local edits made in the last 60s, DON'T overwrite them.
+    // The user's local work always wins over remote when there's a conflict.
+    // They can always do a manual pull from the sheet if they want remote data.
+    if (dirty.size > 0 || timeSinceEdit < 60000) {
+      // Has local unsaved changes — merge safely:
+      // Keep all local rows, only add remote rows that don't exist locally
       const local = getData();
-      const localMap = new Map(local.map(r => [`${r.date}|${r.itemKey}`, r]));
-      const merged = pendingData.map(remoteRow => {
-        const key = `${remoteRow.date}|${remoteRow.itemKey}`;
-        return dirty.has(key) ? (localMap.get(key) || remoteRow) : remoteRow;
+      const localIds = new Set(local.map(r => r.id || `${r.date}|${r.itemKey}`));
+      const remoteOnlyRows = pendingData.filter(r => {
+        const key = r.id || `${r.date}|${r.itemKey}`;
+        return !localIds.has(key);
       });
-      // Add any locally-dirty rows that don't exist in remote yet (new rows)
-      local.forEach(r => {
-        const key = `${r.date}|${r.itemKey}`;
-        if (dirty.has(key) && !pendingData.some(pr => `${pr.date}|${pr.itemKey}` === key)) {
-          merged.push(r);
-        }
-      });
-      onApply(merged);
+      // Only append genuinely new remote rows — never replace local ones
+      if (remoteOnlyRows.length > 0) {
+        onApply([...local, ...remoteOnlyRows]);
+      }
+      // If no new remote-only rows, keep local as-is
+    } else {
+      // No local edits for >60s — safe to take remote entirely
+      onApply(pendingData);
     }
     setPendingCount(0);
     setPendingData(null);
@@ -1995,16 +2002,21 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   // ── Meeting sync ──
   const bmDiff = useCallback((local, remote) => {
     if (!remote || !Array.isArray(remote)) return 0;
-    // Count rows that differ by assignee, done, notes, customLabel, or spiritToggle
-    // for the currently selected date — ignore other dates to reduce noise
     const localDate  = local.filter(r => r.date === selectedDate);
     const remoteDate = remote.filter(r => r.date === selectedDate);
-    if (localDate.length !== remoteDate.length) return Math.abs(localDate.length - remoteDate.length);
-    return localDate.filter((r, i) => {
-      const rem = remoteDate[i];
-      return !rem || r.assignee !== rem.assignee || r.done !== rem.done ||
-             r.notes !== rem.notes || r.customLabel !== rem.customLabel;
-    }).length;
+    // Only alert when remote has content local doesn't — not when local is ahead
+    if (remoteDate.length <= localDate.length) {
+      // Same row count — check for remote changes on fields we didn't edit locally
+      const localMap = new Map(localDate.map(r => [`${r.date}|${r.itemKey}`, r]));
+      return remoteDate.filter(rem => {
+        const key = `${rem.date}|${rem.itemKey}`;
+        const loc = localMap.get(key);
+        if (!loc) return true; // remote has a row local doesn't
+        return rem.assignee !== loc.assignee || rem.done !== loc.done ||
+               rem.notes !== loc.notes || rem.customLabel !== loc.customLabel;
+      }).length;
+    }
+    return remoteDate.length - localDate.length;
   }, [selectedDate]);
 
   const bmDataRef = useRef(bmData);
@@ -2014,8 +2026,9 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
           pendingCount: bmPendingCount, applyPending: bmApplyPending } = useMeetingSync({
     getData:  () => bmDataRef.current,
     saveFn:   async (data) => {
+      bmDirty.current=true;
       const { pushBishopricMeeting } = await import("./sheets");
-      await pushBishopricMeeting(data);
+      try { await pushBishopricMeeting(data); } finally { bmDirty.current=false; }
     },
     pullFn:   async () => {
       const { pullAll } = await import("./sheets");
@@ -2699,7 +2712,7 @@ function AddTaskRow({ onAdd, roster = [], allRoles = false }) {
 
 
 // ─── Calendar Tab ──────────────────────────────────────────────────────────────
-function CalendarTab({ calendar, setCalendar, token, isMobile=false }) {
+function CalendarTab({ calendar, setCalendar, token, isMobile=false, onSaveStart, onSaveEnd }) {
   const today = new Date();
   const [viewYear,  setViewYear]  = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth()); // 0-indexed
@@ -2740,8 +2753,9 @@ function CalendarTab({ calendar, setCalendar, token, isMobile=false }) {
     setSaving(true);
     try {
       const { pushCalendar } = await import("./sheets");
-      await pushCalendar(data);
-      notify.success("Calendar saved");
+      if(onSaveStart) onSaveStart();
+      try { await pushCalendar(data); notify.success("Calendar saved"); }
+      finally { if(onSaveEnd) onSaveEnd(); }
     } catch(e) {
       notify.error("Save failed: " + e.message);
     }
@@ -3136,19 +3150,26 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     if (!remote || !Array.isArray(remote)) return 0;
     const localDate  = local.filter(r => r.date === selectedDate);
     const remoteDate = remote.filter(r => r.date === selectedDate);
-    if (localDate.length !== remoteDate.length) return Math.abs(localDate.length - remoteDate.length);
-    return localDate.filter((r, i) => {
-      const rem = remoteDate[i];
-      return !rem || r.assignee !== rem.assignee || r.done !== rem.done || r.notes !== rem.notes;
-    }).length;
+    // Only alert when remote has content local doesn't — not when local is ahead
+    if (remoteDate.length <= localDate.length) {
+      const localMap = new Map(localDate.map(r => [`${r.date}|${r.itemKey}`, r]));
+      return remoteDate.filter(rem => {
+        const key = `${rem.date}|${rem.itemKey}`;
+        const loc = localMap.get(key);
+        if (!loc) return true;
+        return rem.assignee !== loc.assignee || rem.done !== loc.done || rem.notes !== loc.notes;
+      }).length;
+    }
+    return remoteDate.length - localDate.length;
   }, [selectedDate]);
 
   const { markDirty: wcMarkDirty, doSave, saveStatus: wcSaveStatus,
           pendingCount: wcPendingCount, applyPending: wcApplyPending } = useMeetingSync({
     getData:  () => wcDataRef.current,
     saveFn:   async (data) => {
+      wcDirty.current=true;
       const { pushWardCouncilMeeting } = await import("./sheets");
-      await pushWardCouncilMeeting(data);
+      try { await pushWardCouncilMeeting(data); } finally { wcDirty.current=false; }
     },
     pullFn:   async () => {
       const { pullWardCouncilMeeting } = await import("./sheets");
@@ -4523,11 +4544,10 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false }) {
     if (!remote || !Array.isArray(remote)) return 0;
     const localDate  = local.filter(r => r.date === activeDate);
     const remoteDate = remote.filter(r => r.date === activeDate);
-    if (localDate.length !== remoteDate.length) return Math.abs(localDate.length - remoteDate.length);
-    return localDate.filter((r, i) => {
-      const rem = remoteDate[i];
-      return !rem || r.value !== rem.value || r.label !== rem.label || r.globalOrder !== rem.globalOrder;
-    }).length;
+    // Only alert if REMOTE has more rows than local (someone else added items)
+    // Don't alert if local has more rows — that means we've added items not yet saved
+    if (remoteDate.length <= localDate.length) return 0;
+    return remoteDate.length - localDate.length;
   }, [activeDate]);
 
   const sacrDataRef = useRef(data);
@@ -4536,7 +4556,7 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false }) {
   const { markDirty: sacrMarkDirty, doSave, saveStatus: sacrSaveStatus,
           pendingCount: sacrPendingCount, applyPending: sacrApplyPending } = useMeetingSync({
     getData:  () => sacrDataRef.current,
-    saveFn:   async (data) => { if (saveFn) await saveFn(data); },
+    saveFn:   async (data) => { if (saveFn) { sacrDirty.current=true; try { await saveFn(data); } finally { sacrDirty.current=false; } } },
     pullFn:   pullFn || null,
     diffFn:   sacrDiff,
     onApply:  (remote) => setData(remote),
@@ -4557,7 +4577,7 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false }) {
 
   const updateItem = (id, field, value) => {
     setData(prev => prev.map(r => r.id === id ? {...r, [field]: value} : r));
-    sacrMarkDirty(id);
+    sacrMarkDirty(id); // marks this row as locally edited
   };
 
   const deleteItem = (id) => {
