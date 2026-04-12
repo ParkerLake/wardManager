@@ -948,8 +948,11 @@ function MainApp({ user, token, onSignOut }) {
               {user.picture?<img src={user.picture} alt="" style={{width:20,height:20,borderRadius:"50%"}}/>:<User size={14} color={C.textMuted}/>}
               {!isMobile&&<span style={{fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>{user.name?.split(" ")[0]}</span>}
               <button onClick={onSignOut} title="Sign out"
-                style={{background:"none",border:"none",color:C.textLight,cursor:"pointer",display:"flex",alignItems:"center"}}>
-                <LogOut size={12}/>
+                style={{background:"none",border:`1px solid ${C.borderLight}`,borderRadius:8,
+                  color:C.textMuted,cursor:"pointer",display:"flex",alignItems:"center",
+                  padding:isMobile?"10px 12px":"5px 8px",minWidth:isMobile?44:undefined,
+                  minHeight:isMobile?44:undefined,justifyContent:"center"}}>
+                <LogOut size={isMobile?16:12}/>
               </button>
             </div>
           </div>
@@ -4711,10 +4714,8 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
   const dragItem = useRef(null);
   const dragOver = useRef(null);
   const [dragIdx, setDragIdx] = useState(null);
-  // Touch drag state
-  const touchStartY = useRef(null);
-  const touchItemIdx = useRef(null);
   const rowRefs = useRef([]);
+  const containerRef = useRef(null);
 
   // ── Desktop mouse drag ──
   const handleDragStart = (e, idx) => {
@@ -4738,35 +4739,56 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
     dragOver.current = idx;
   };
 
-  // ── Mobile touch drag ──
-  const handleTouchStart = (e, idx) => {
-    touchStartY.current = e.touches[0].clientY;
-    touchItemIdx.current = idx;
-    dragItem.current = idx;
-    setDragIdx(idx);
-  };
-  const handleTouchMove = (e) => {
-    e.preventDefault(); // Prevent page scroll while dragging
-    const y = e.touches[0].clientY;
-    // Find which row we're hovering over based on Y position
-    let overIdx = null;
-    rowRefs.current.forEach((ref, i) => {
-      if (!ref) return;
-      const rect = ref.getBoundingClientRect();
-      if (y >= rect.top && y <= rect.bottom) overIdx = i;
-    });
-    if (overIdx !== null) dragOver.current = overIdx;
-  };
-  const handleTouchEnd = () => {
-    setDragIdx(null);
-    if (dragItem.current === null || dragOver.current === null || dragItem.current === dragOver.current) {
-      dragItem.current = null; dragOver.current = null; return;
-    }
-    const next = [...items];
-    const [moved] = next.splice(dragItem.current, 1);
-    next.splice(dragOver.current, 0, moved);
-    onReorder(next.map((item, i) => ({ ...item, globalOrder: i })));
-    dragItem.current = null; dragOver.current = null;
+  // ── Mobile touch drag — attached as native non-passive listeners ──
+  // React synthetic onTouchMove is passive (can't call preventDefault),
+  // so we attach native listeners directly to each drag handle.
+  const attachTouchHandlers = (el, idx) => {
+    if (!el) return;
+    // Remove old listeners to avoid duplicates
+    el._touchStart && el.removeEventListener('touchstart', el._touchStart);
+    el._touchMove  && el.removeEventListener('touchmove',  el._touchMove);
+    el._touchEnd   && el.removeEventListener('touchend',   el._touchEnd);
+
+    el._touchStart = (e) => {
+      dragItem.current = idx;
+      dragOver.current = idx;
+      setDragIdx(idx);
+    };
+    el._touchMove = (e) => {
+      e.preventDefault(); // Works on native non-passive listener
+      const y = e.touches[0].clientY;
+      let overIdx = null;
+      rowRefs.current.forEach((ref, i) => {
+        if (!ref) return;
+        const rect = ref.getBoundingClientRect();
+        if (y >= rect.top && y <= rect.bottom) overIdx = i;
+      });
+      if (overIdx !== null && overIdx !== dragOver.current) {
+        dragOver.current = overIdx;
+        // Visual feedback — highlight target row
+        rowRefs.current.forEach((ref, i) => {
+          if (!ref) return;
+          ref.style.borderTop = i === overIdx && overIdx !== dragItem.current
+            ? `2px solid ${C.blue35}` : "";
+        });
+      }
+    };
+    el._touchEnd = () => {
+      rowRefs.current.forEach(ref => { if (ref) ref.style.borderTop = ""; });
+      setDragIdx(null);
+      if (dragItem.current === null || dragOver.current === null || dragItem.current === dragOver.current) {
+        dragItem.current = null; dragOver.current = null; return;
+      }
+      const next = [...items];
+      const [moved] = next.splice(dragItem.current, 1);
+      next.splice(dragOver.current, 0, moved);
+      onReorder(next.map((item, i) => ({ ...item, globalOrder: i })));
+      dragItem.current = null; dragOver.current = null;
+    };
+
+    el.addEventListener('touchstart', el._touchStart, { passive: true });
+    el.addEventListener('touchmove',  el._touchMove,  { passive: false }); // non-passive!
+    el.addEventListener('touchend',   el._touchEnd,   { passive: true });
   };
 
   return (
@@ -4777,19 +4799,17 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
         return isMobile ? (
             /* Mobile card layout with touch drag */
             <div key={item.id}
-              ref={el => rowRefs.current[idx] = el}
+              ref={el => { rowRefs.current[idx] = el; }}
               style={{borderBottom:`1px solid ${C.borderLight}`,padding:"12px 14px",
                 background: dragIdx === idx ? C.surfaceWarm : "transparent",
                 opacity: dragIdx === idx ? 0.5 : 1,
                 transition:"background .1s,opacity .1s"}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  {/* Touch drag handle */}
+                  {/* Touch drag handle — uses native non-passive listener */}
                   <div
-                    onTouchStart={e=>handleTouchStart(e,idx)}
-                    onTouchMove={handleTouchMove}
-                    onTouchEnd={handleTouchEnd}
-                    style={{color:C.textLight,padding:"4px 6px",cursor:"grab",display:"flex",
+                    ref={el => attachTouchHandlers(el, idx)}
+                    style={{color:C.textLight,padding:"12px 8px",cursor:"grab",display:"flex",
                       alignItems:"center",touchAction:"none",userSelect:"none"}}>
                     <DragHandleIcon/>
                   </div>
