@@ -803,10 +803,10 @@ function MainApp({ user, token, onSignOut }) {
   // This prevents multi-device race conditions — each pull is atomic.
   const autoCreateAppointments = useCallback(async (freshAppts, freshCallings, freshReleasings) => {
     if (!isAdminRef.current) return;
-    const hasAppt = (name, purpose, calling) => freshAppts.some(a =>
+    // Check if person already has any non-completed appointment
+    // Matches on name only — if they're already on the board, don't add again
+    const hasAppt = (name) => freshAppts.some(a =>
       a.name.toLowerCase() === name.toLowerCase() &&
-      a.purpose === purpose &&
-      a.notes === calling &&
       a.status !== "Completed"
     );
 
@@ -816,7 +816,7 @@ function MainApp({ user, token, onSignOut }) {
     freshCallings.forEach(c => {
       if (c.stage !== "Approved to Call" || !c.name) return;
       const key = `${c.name}|Calling|${c.calling}`;
-      if (seen.has(key) || hasAppt(c.name, "Calling", c.calling)) return;
+      if (seen.has(key) || hasAppt(c.name)) return;
       seen.add(key);
       toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
         name:c.name, status:"Need to Schedule", owner:"Bishop",
@@ -826,7 +826,7 @@ function MainApp({ user, token, onSignOut }) {
     freshReleasings.forEach(r => {
       if (r.stage !== "Approved to Release" || !r.name) return;
       const key = `${r.name}|Releasing|${r.calling}`;
-      if (seen.has(key) || hasAppt(r.name, "Releasing", r.calling)) return;
+      if (seen.has(key) || hasAppt(r.name)) return;
       seen.add(key);
       toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
         name:r.name, status:"Need to Schedule", owner:"Bishop",
@@ -836,7 +836,7 @@ function MainApp({ user, token, onSignOut }) {
     freshCallings.forEach(c => {
       if (c.stage !== "Sustained" || !c.name) return;
       const key = `${c.name}|Set Apart|${c.calling}`;
-      if (seen.has(key) || hasAppt(c.name, "Set Apart", c.calling)) return;
+      if (seen.has(key) || hasAppt(c.name)) return;
       seen.add(key);
       toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
         name:c.name, status:"Need to Schedule", owner:"Bishop",
