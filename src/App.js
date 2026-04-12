@@ -1041,12 +1041,12 @@ function MainApp({ user, token, onSignOut }) {
             } catch(e){ notify.error("Save failed: "+e.message,6000); }
             finally { pipelineDirty.current=false; }
           }}/>}
-        {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab}/>}
+        {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab} onSaveStart={()=>{bmDirty.current=true;}} onSaveEnd={()=>{bmDirty.current=false;}}/>}
         {isAdmin&&tab==="notes"       &&<NotesTab    data={members}  setData={setMembers}/>}
         {isAdmin&&tab==="alerts"      &&<AlertsTab appointments={appointments} callings={callings} releasings={releasings} isMobile={isMobile}/>}
-        {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} isMobile={isMobile}/>}
+        {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} isMobile={isMobile} onSaveStart={()=>{sacrDirty.current=true;}} onSaveEnd={()=>{sacrDirty.current=false;}}/>}
         {(isAdmin||isWardCouncil)&&tab==="calendar"&&<CalendarTab calendar={calendar} setCalendar={setCalendar} token={token} isMobile={isMobile} onSaveStart={()=>{calendarDirty.current=true;}} onSaveEnd={()=>{calendarDirty.current=false;}}/>}
-        {(isAdmin||isWardCouncil)&&tab==="ward-council"&&<WardCouncilTab wardCouncilMeeting={wardCouncilMeeting} setWardCouncilMeeting={setWardCouncilMeeting} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isAdmin={isAdmin}/>}
+        {(isAdmin||isWardCouncil)&&tab==="ward-council"&&<WardCouncilTab wardCouncilMeeting={wardCouncilMeeting} setWardCouncilMeeting={setWardCouncilMeeting} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isAdmin={isAdmin} onSaveStart={()=>{wcDirty.current=true;}} onSaveEnd={()=>{wcDirty.current=false;}}/>}
         {(isAdmin||isWardCouncil)&&tab==="links"&&<LinksTab bishopricLinks={isAdmin?bishopricLinks:null} setBishopricLinks={setBishopricLinks} wcLinks={wcLinks} setWcLinks={setWcLinks} token={token} isAdmin={isAdmin}/>}
         {!isAdmin&&!isWardCouncil&&<UnauthorizedView/>}
       </main>
@@ -1738,7 +1738,7 @@ const BM_SECTION_STYLE = {
   "Closing":  { color: C.purple,  bg: "#F3EDF8", border: "#7B5EA7" },
 };
 
-function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, releasings, sacramentProgram, calendar=[], roster=[], token="", onNavigate }) {
+function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, releasings, sacramentProgram, calendar=[], roster=[], token="", onNavigate , onSaveStart, onSaveEnd }) {
   const today = localDateStr(new Date());
   // Find next Sunday
   const nextSundayDate = getUpcomingSunday();
@@ -2026,9 +2026,9 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
           pendingCount: bmPendingCount, applyPending: bmApplyPending } = useMeetingSync({
     getData:  () => bmDataRef.current,
     saveFn:   async (data) => {
-      bmDirty.current=true;
+      if(onSaveStart) onSaveStart();
       const { pushBishopricMeeting } = await import("./sheets");
-      try { await pushBishopricMeeting(data); } finally { bmDirty.current=false; }
+      try { await pushBishopricMeeting(data); } finally { if(onSaveEnd) onSaveEnd(); }
     },
     pullFn:   async () => {
       const { pullAll } = await import("./sheets");
@@ -3034,7 +3034,7 @@ const WC_TEMPLATE = [
   { itemKey: "closing_prayer",   section: "Closing",   label: "Closing Prayer",          hasAssignee: true,  isStatic: true },
 ];
 
-function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[], roster=[], token="", onNavigate, isAdmin=false }) {
+function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[], roster=[], token="", onNavigate, isAdmin=false , onSaveStart, onSaveEnd }) {
   const today = localDateStr(new Date());
   const nextSundayDate = getUpcomingSunday();
 
@@ -3167,9 +3167,9 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
           pendingCount: wcPendingCount, applyPending: wcApplyPending } = useMeetingSync({
     getData:  () => wcDataRef.current,
     saveFn:   async (data) => {
-      wcDirty.current=true;
+      if(onSaveStart) onSaveStart();
       const { pushWardCouncilMeeting } = await import("./sheets");
-      try { await pushWardCouncilMeeting(data); } finally { wcDirty.current=false; }
+      try { await pushWardCouncilMeeting(data); } finally { if(onSaveEnd) onSaveEnd(); }
     },
     pullFn:   async () => {
       const { pullWardCouncilMeeting } = await import("./sheets");
@@ -4531,7 +4531,7 @@ ${preview.length} record${preview.length===1?"":"s"} · ${source} · Ward Manage
 }
 
 
-function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false }) {
+function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false, onSaveStart, onSaveEnd }) {
   const allDates = [...new Set(data.map(r=>r.date).filter(Boolean))].sort().reverse();
   // Always default to the upcoming Sunday (matches Bishopric tab behaviour)
   const [activeDate, setActiveDate] = useState(nextSunday);
@@ -4556,7 +4556,7 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false }) {
   const { markDirty: sacrMarkDirty, doSave, saveStatus: sacrSaveStatus,
           pendingCount: sacrPendingCount, applyPending: sacrApplyPending } = useMeetingSync({
     getData:  () => sacrDataRef.current,
-    saveFn:   async (data) => { if (saveFn) { sacrDirty.current=true; try { await saveFn(data); } finally { sacrDirty.current=false; } } },
+    saveFn:   async (data) => { if (saveFn) { if(onSaveStart) onSaveStart(); try { await saveFn(data); } finally { if(onSaveEnd) onSaveEnd(); } } },
     pullFn:   pullFn || null,
     diffFn:   sacrDiff,
     onApply:  (remote) => setData(remote),
