@@ -2044,10 +2044,9 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   // Build message lines and open preview modal
   const doSendSlack = () => {
     const relayURL = config.SLACK_RELAY_URL || "";
-    const webhookURL = config.SLACK_WEBHOOK_BISHOPRIC || "";
+    const webhookURL = "bishopric"; // channelKey — maps to secret in Cloudflare Worker
     const channelName = config.SLACK_WEBHOOK_BISHOPRIC_NAME || "bishopric";
     if (!relayURL || relayURL.includes("YOUR_")) { notify.error("No relay URL configured in config.js"); return; }
-    if (!webhookURL || webhookURL.includes("YOUR/")) { notify.error("No bishopric Slack webhook configured in config.js"); return; }
 
     const approvedCallings  = callings.filter(c => c.stage === "Approved to Call").length;
     const approvedReleasings= releasings.filter(r => r.stage === "Approved to Release").length;
@@ -2088,16 +2087,18 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
     const text = [firstLine, ...bodyLines].join("\n");
     setSending(true);
     try {
-      const res = await fetch(relayURL, {
-        method: "POST", headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ channel: channelKey, text }),
+      const workerUrl = config.SLACK_RELAY_URL || "";
+      const res = await fetch(`${workerUrl}/slack`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channelKey, text }),
       });
-      const data = await res.json().catch(() => ({ status: res.status }));
-      if (res.ok && data.status === 200) {
+      const data = await res.json().catch(() => ({ ok: false }));
+      if (data.ok) {
         notify.success(`Agenda sent to #${channelName}`);
         setSlackDraft(null);
       } else {
-        notify.error(`Relay error: ${data.message || res.status}`);
+        notify.error(`Slack error: ${data.message || res.status}`);
       }
     } catch (e) {
       notify.error("Failed to reach relay: " + e.message);
@@ -3289,10 +3290,9 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
   // Build and open Slack preview modal
   const doSendSlack = () => {
     const relayURL = config.SLACK_RELAY_URL || "";
-    const webhookURL = config.SLACK_WEBHOOK_WARD_COUNCIL || "";
+    const webhookURL = "ward_council"; // channelKey — maps to secret in Cloudflare Worker
     const channelName = config.SLACK_WEBHOOK_WARD_COUNCIL_NAME || "ward-council";
     if (!relayURL || relayURL.includes("YOUR_")) { notify.error("No relay URL configured in config.js"); return; }
-    if (!webhookURL || webhookURL.includes("YOUR/")) { notify.error("No Ward Council Slack webhook configured in config.js"); return; }
 
     const sLabel = spiritLabel === "handbook_review" ? "Handbook Review" : "Spiritual Thought";
     const songRow = getItem("opening_song");
@@ -3320,16 +3320,18 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     const text = [firstLine, ...bodyLines].join("\n");
     setSending(true);
     try {
-      const res = await fetch(relayURL, {
-        method: "POST", headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ channel: channelKey, text }),
+      const workerUrl = config.SLACK_RELAY_URL || "";
+      const res = await fetch(`${workerUrl}/slack`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channelKey, text }),
       });
-      const data = await res.json().catch(() => ({ status: res.status }));
-      if (res.ok && data.status === 200) {
+      const data = await res.json().catch(() => ({ ok: false }));
+      if (data.ok) {
         notify.success(`Agenda sent to #${channelName}`);
         setSlackDraft(null);
       } else {
-        notify.error(`Relay error: ${data.message || res.status}`);
+        notify.error(`Slack error: ${data.message || res.status}`);
       }
     } catch (e) {
       notify.error("Failed to reach relay: " + e.message);
@@ -4258,8 +4260,8 @@ function AlertsTab({appointments, callings, releasings, isMobile=false}){
 
   const ch1Name = config.SLACK_WEBHOOK_APPOINTMENTS_NAME||"Appointments";
   const ch2Name = config.SLACK_WEBHOOK_CALLINGS_NAME||"Callings";
-  const ch1URL  = config.SLACK_WEBHOOK_APPOINTMENTS||"";
-  const ch2URL  = config.SLACK_WEBHOOK_CALLINGS||"";
+  const ch1URL  = "appointments"; // channelKey — maps to secret in Cloudflare Worker
+  const ch2URL  = "callings";     // channelKey — maps to secret in Cloudflare Worker
 
   // Build stage options per source
   const stageOptions = source==="Appointments" ? APPT_STAGES
@@ -4321,12 +4323,14 @@ function AlertsTab({appointments, callings, releasings, isMobile=false}){
     ];
     setSending(true);
     try {
-      const res = await fetch(relayURL, {
-        method:"POST", headers:{"Content-Type":"text/plain"},
-        body: JSON.stringify({channel: channelKey, text, blocks}),
+      const workerUrl = config.SLACK_RELAY_URL || "";
+      const res = await fetch(`${workerUrl}/slack`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({channelKey, text, blocks}),
       });
-      const data = await res.json().catch(()=>({status:res.status}));
-      if(res.ok && data.status===200){
+      const data = await res.json().catch(()=>({ok:false}));
+      if(data.ok){
         notify.success(`Alert sent to #${channelName} (${preview.length} record${preview.length===1?"":"s"})`);
         setSlackDraft(null);
       } else {

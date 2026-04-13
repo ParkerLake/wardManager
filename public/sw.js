@@ -1,6 +1,6 @@
 // Ward Manager Service Worker
 // ── Bump this version string on every deploy to force cache refresh ──
-const VERSION = 'v11';
+const VERSION = 'v12';
 
 const CACHE_NAME = `ward-manager-${VERSION}`;
 
