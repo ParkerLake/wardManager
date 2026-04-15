@@ -504,21 +504,21 @@ function NavGroup({ group, activeTab, isActiveGroup, onSelect, compact=false }) 
 }
 
 
-function LoginScreen({ onSubmitEmail, error }) {
-  const [email, setEmail] = useState("");
-  const handleSubmit = () => onSubmitEmail(email);
+function LoginScreen({ stage, pendingEmail, onSubmitEmail, onSubmitPassword, onBackToEmail, error }) {
+  const [email,    setEmail]    = useState("");
+  const [password, setPassword] = useState("");
 
   return (
     <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
       minHeight:"100vh", background:C.pageBg, padding:24 }}>
       <div style={{ background:C.surfaceWhite, borderRadius:16, padding:"40px 48px", maxWidth:400,
         width:"100%", boxShadow:"0 8px 40px rgba(0,48,87,.12)", textAlign:"center" }}>
+
         <div style={{ fontFamily:"Georgia,serif", fontSize:26, fontWeight:600, color:C.blue35, marginBottom:4 }}>
           Ward Manager
         </div>
-        <div style={{ fontSize:13, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif", marginBottom:32 }}>
-          {config.WARD_NAME}
-        </div>
+        <div style={{ fontSize:13, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+          marginBottom:32 }}>{config.WARD_NAME}</div>
 
         {error && (
           <div style={{ background:"#FEF0F4", border:`1px solid ${C.red15}`, borderRadius:8,
@@ -528,7 +528,8 @@ function LoginScreen({ onSubmitEmail, error }) {
           </div>
         )}
 
-        <div>
+        {stage === "email_entry" && (
+          <div>
             <div style={{ marginBottom:16, textAlign:"left" }}>
               <label style={{ display:"block", fontSize:11, fontWeight:700, letterSpacing:".06em",
                 textTransform:"uppercase", color:C.textMuted,
@@ -536,21 +537,56 @@ function LoginScreen({ onSubmitEmail, error }) {
                 Email Address
               </label>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleSubmit()}
+                onKeyDown={e => e.key === "Enter" && onSubmitEmail(email)}
                 placeholder="your@email.com" autoFocus
                 style={{ width:"100%", padding:"10px 14px", fontSize:14, borderRadius:8,
                   border:`1.5px solid ${C.border}`, fontFamily:"'Helvetica Neue',Arial,sans-serif",
                   boxSizing:"border-box", outline:"none" }}/>
             </div>
-            <button onClick={handleSubmit} disabled={!email.trim()}
+            <button onClick={() => onSubmitEmail(email)} disabled={!email.trim()}
               style={{ width:"100%", padding:"12px 24px", background:C.blue35, color:"#fff",
                 border:"none", borderRadius:10, fontSize:15,
                 fontFamily:"'Helvetica Neue',Arial,sans-serif", fontWeight:600,
-                cursor:!email.trim()?"not-allowed":"pointer",
-                opacity:!email.trim()?.6:1 }}>
+                cursor:!email.trim()?"not-allowed":"pointer", opacity:!email.trim()?.6:1 }}>
               Continue
             </button>
           </div>
+        )}
+
+        {stage === "password_entry" && (
+          <div>
+            <div style={{ fontSize:13, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+              marginBottom:16, textAlign:"left" }}>
+              Signing in as <strong style={{color:C.textPrimary}}>{pendingEmail}</strong>
+            </div>
+            <div style={{ marginBottom:16, textAlign:"left" }}>
+              <label style={{ display:"block", fontSize:11, fontWeight:700, letterSpacing:".06em",
+                textTransform:"uppercase", color:C.textMuted,
+                fontFamily:"'Helvetica Neue',Arial,sans-serif", marginBottom:6 }}>
+                Password
+              </label>
+              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && onSubmitPassword(password)}
+                placeholder="••••••••" autoFocus
+                style={{ width:"100%", padding:"10px 14px", fontSize:14, borderRadius:8,
+                  border:`1.5px solid ${C.border}`, fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                  boxSizing:"border-box", outline:"none" }}/>
+            </div>
+            <button onClick={() => onSubmitPassword(password)} disabled={!password.trim()}
+              style={{ width:"100%", padding:"12px 24px", background:C.blue35, color:"#fff",
+                border:"none", borderRadius:10, fontSize:15,
+                fontFamily:"'Helvetica Neue',Arial,sans-serif", fontWeight:600,
+                cursor:!password.trim()?"not-allowed":"pointer", opacity:!password.trim()?.6:1,
+                marginBottom:10 }}>
+              Sign In
+            </button>
+            <button onClick={onBackToEmail}
+              style={{ background:"none", border:"none", cursor:"pointer",
+                fontSize:12, color:C.textMuted, fontFamily:"'Helvetica Neue',Arial,sans-serif" }}>
+              ← Use a different email
+            </button>
+          </div>
+        )}
 
         <div style={{ fontSize:11, color:C.textLight, fontFamily:"'Helvetica Neue',Arial,sans-serif",
           marginTop:20, lineHeight:1.5 }}>
@@ -5174,7 +5210,16 @@ function PushIcon(){return<Save size={11}/>;}
 
 // ─── Root ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const { user, error, submitEmail, signOut } = useAuth();
-  if (!user) return <LoginScreen onSubmitEmail={submitEmail} error={error}/>;
+  const { user, error, stage, pendingEmail, submitEmail, submitPassword, backToEmail, signOut } = useAuth();
+  if (!user || stage !== "done") return (
+    <LoginScreen
+      stage={stage}
+      pendingEmail={pendingEmail}
+      onSubmitEmail={submitEmail}
+      onSubmitPassword={submitPassword}
+      onBackToEmail={backToEmail}
+      error={error}
+    />
+  );
   return <MainApp user={user} token={null} onSignOut={signOut}/>;
 }
