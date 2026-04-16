@@ -334,59 +334,103 @@ function ModalFooter({ onClose, onSave, saveLabel="Save", saving }) {
 // ─── Slack Preview Modal ─────────────────────────────────────────────────────
 // Used by all three Slack send flows: Bishopric, Ward Council, Alerts.
 // Shows editable first line + full message preview before sending.
-function SlackPreviewModal({ firstLine, setFirstLine, bodyLines, channelName, sending, onConfirm, onClose }) {
+function SlackPreviewModal({ firstLine, setFirstLine, agendaLines, assignmentLines, mode, onModeChange, channelName, sending, onConfirm, onClose }) {
+  const bodyLines = mode === "agenda" ? (agendaLines||[]) : (assignmentLines||[]);
   const previewText = [firstLine, ...bodyLines].join("\n");
+
+  // Slack-like rendering: bold, italic, strikethrough, emoji
+  const renderLine = (line, i) => {
+    if (!line) return <div key={i} style={{height:6}}/>;
+    const isDivider = /^─+$/.test(line.trim());
+    if (isDivider) return <hr key={i} style={{border:"none",borderTop:`1px solid ${C.border}`,margin:"8px 0"}}/>;
+    // Section headers — ALL CAPS lines with no leading spaces
+    const isHeader = line === line.toUpperCase() && line.trim().length > 1 && !line.startsWith(" ");
+    if (isHeader) return (
+      <div key={i} style={{fontSize:11,fontWeight:700,letterSpacing:".08em",
+        color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+        marginTop:4,marginBottom:2}}>
+        {line}
+      </div>
+    );
+    // Indented lines
+    const isIndented = line.startsWith("  ");
+    const trimmed = isIndented ? line.slice(2) : line;
+    const isDone = trimmed.startsWith("✓ ");
+    const isPending = trimmed.startsWith("— ");
+    return (
+      <div key={i} style={{display:"flex",gap:6,alignItems:"baseline",lineHeight:1.55,
+        fontSize:13,fontFamily:"'Helvetica Neue',Arial,sans-serif",padding:"1px 0",
+        paddingLeft:isIndented?"12px":0,
+        color:isDone?C.textMuted:C.textPrimary}}>
+        {isDone   && <span style={{color:"#2e7d32",flexShrink:0,fontSize:12}}>✓</span>}
+        {isPending && <span style={{color:C.textMuted,flexShrink:0,fontSize:12}}>—</span>}
+        <span style={{textDecoration:isDone?"line-through":"none"}}>
+          {isDone ? trimmed.slice(2) : isPending ? trimmed.slice(2) : trimmed}
+        </span>
+      </div>
+    );
+  };
+
   return (
-    <ModalShell onClose={onClose} title="Preview Message" subtitle={`Send to #${channelName}`} size="lg">
-      <div style={{display:"flex",flexDirection:"column",gap:20}}>
-
-        {/* Editable first line */}
-        <div>
-          <label style={{display:"block",fontSize:11,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",
-            color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginBottom:8}}>
-            First Line
-          </label>
-          <input
-            type="text"
-            value={firstLine}
-            onChange={e => setFirstLine(e.target.value)}
-            style={{width:"100%",padding:"9px 14px",fontSize:14,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-              border:`1.5px solid ${C.blue25}`,borderRadius:8,boxSizing:"border-box",
-              background:C.surfaceWarm,color:C.textPrimary,outline:"none"}}
-          />
-          <div style={{fontSize:11,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginTop:5}}>
-            This is the bold header line that appears at the top of the Slack message.
-          </div>
-        </div>
-
-        {/* Full message preview */}
-        <div>
-          <label style={{display:"block",fontSize:11,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",
-            color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginBottom:8}}>
-            Message Preview
-          </label>
-          <div style={{background:"#1a1d21",borderRadius:10,padding:"16px 18px",maxHeight:340,overflowY:"auto",
-            border:`1px solid ${C.border}`}}>
-            <pre style={{margin:0,whiteSpace:"pre-wrap",wordBreak:"break-word",
-              fontFamily:"'SF Mono','Fira Code','Consolas',monospace",fontSize:12,
-              color:"#d1d2d3",lineHeight:1.6}}>
-              {previewText}
-            </pre>
-          </div>
-          <div style={{fontSize:11,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginTop:5}}>
-            Slack markdown (*bold*, _italic_) will render in the channel.
-          </div>
-        </div>
-
-        {/* Actions */}
-        <div style={{display:"flex",justifyContent:"flex-end",gap:10,paddingTop:4,borderTop:`1px solid ${C.borderLight}`}}>
-          <button onClick={onClose} className="btn-secondary" disabled={sending}>Cancel</button>
-          <button onClick={onConfirm} className="btn-primary" disabled={sending}
-            style={{display:"flex",alignItems:"center",gap:7}}>
-            <Bell size={13}/> {sending ? "Sending…" : `Send to #${channelName}`}
+    <ModalShell onClose={onClose} title={`Send to #${channelName}`} width={520}>
+      {/* Mode toggle — only shown for meeting tabs, not alerts */}
+      {onModeChange && <div style={{display:"flex",gap:8,marginBottom:16}}>
+        {["assignments","agenda"].map(m => (
+          <button key={m} onClick={() => onModeChange(m)}
+            style={{flex:1,padding:"8px 12px",borderRadius:8,border:`1.5px solid ${mode===m?C.blue35:C.border}`,
+              background:mode===m?C.blue35:"transparent",color:mode===m?"#fff":C.textPrimary,
+              fontSize:13,fontWeight:mode===m?600:400,cursor:"pointer",
+              fontFamily:"'Helvetica Neue',Arial,sans-serif",transition:"all .15s"}}>
+            {m === "assignments" ? "📋 Assignments only" : "📄 Full agenda"}
           </button>
-        </div>
+        ))}
+      </div>}
 
+      {/* Editable title */}
+      <div style={{marginBottom:12}}>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:".05em",textTransform:"uppercase",
+          color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginBottom:4}}>
+          Message title
+        </div>
+        <input value={firstLine.replace(/\*/g,"")} onChange={e => setFirstLine(e.target.value)}
+          style={{width:"100%",padding:"8px 12px",fontSize:13,borderRadius:8,
+            border:`1.5px solid ${C.border}`,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+            boxSizing:"border-box",fontWeight:600}}/>
+      </div>
+
+      {/* Preview */}
+      <div style={{marginBottom:16}}>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:".05em",textTransform:"uppercase",
+          color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginBottom:4}}>
+          Preview
+        </div>
+        <div style={{background:"#f8f8f8",borderRadius:8,padding:"14px 16px",
+          border:`1px solid ${C.border}`,maxHeight:320,overflowY:"auto"}}>
+          {/* Title */}
+          <div style={{fontSize:14,fontWeight:700,marginBottom:8,
+            fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.ink}}>
+            {firstLine}
+          </div>
+          {/* Body lines */}
+          {bodyLines.map((line, i) => renderLine(line, i))}
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+        <button onClick={onClose} disabled={sending}
+          style={{padding:"9px 18px",borderRadius:8,border:`1.5px solid ${C.border}`,
+            background:"transparent",color:C.textPrimary,fontSize:13,cursor:"pointer",
+            fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>
+          Cancel
+        </button>
+        <button onClick={onConfirm} disabled={sending}
+          style={{padding:"9px 20px",borderRadius:8,border:"none",
+            background:sending?"#aaa":C.blue35,color:"#fff",fontSize:13,fontWeight:600,
+            cursor:sending?"not-allowed":"pointer",
+            fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>
+          {sending ? "Sending…" : `Send to #${channelName}`}
+        </button>
       </div>
     </ModalShell>
   );
@@ -1774,6 +1818,115 @@ const BM_SECTION_STYLE = {
   "Closing":  { color: C.purple,  bg: "#F3EDF8", border: "#7B5EA7" },
 };
 
+
+// ── Slack agenda builders ─────────────────────────────────────────────────────
+function buildBMAgendaLines(bmData, date, callings, releasings, sacramentProgram, spiritLabel, getItem, sLabel, songLine, organist, chorister, speakers, approvedCallings, approvedReleasings, divider, songRow) {
+  const val    = (v) => (v && v !== "_unassigned_") ? v : "—";
+  const assign = (label, value) => `  ${label}: ${val(value)}`;
+  const topic  = (t) => t.done ? `  ✓ ${t.notes||t.customLabel||t.label}` : `  — ${t.notes||t.customLabel||t.label}`;
+  const task   = (t) => t.done ? `  ✓ ${t.customLabel||t.label} (${t.assignee||"unassigned"})` : `  — ${t.customLabel||t.label} (${t.assignee||"unassigned"})`;
+  const openingSongLine = `  Opening Song: ${(songRow?.assignee && songRow.assignee !== "_unassigned_") ? songRow.assignee : "—"}`;
+
+  const dayData     = bmData.filter(r => r.date === date);
+  const topics      = dayData.filter(r => r.itemKey && r.itemKey.startsWith("topic_"));
+  const tasks       = dayData.filter(r => r.itemKey && r.itemKey.startsWith("task_"));
+  const sacrItems   = (sacramentProgram||[]).filter(s => s.date === date);
+  const speakerList = speakers.length ? speakers.join(", ") : "—";
+
+  const lines = [
+    divider,
+    "OPENING",
+    openingSongLine,
+    assign("Opening Prayer", getItem("opening_prayer")?.assignee),
+    assign(sLabel, getItem("spirit_thought")?.assignee),
+    "",
+  ];
+
+  // SACRAMENT AGENDA always appears as a section header after opening
+  lines.push("SACRAMENT AGENDA");
+  lines.push("");
+
+  if (sacrItems.length) {
+    lines.push("SACRAMENT MEETING");
+    lines.push(`  Organist: ${organist}`);
+    lines.push(`  Chorister: ${chorister}`);
+    lines.push(`  Speaker(s): ${speakerList}`);
+    lines.push("");
+  }
+
+  // Always show callings & releasings section with all four counts
+  const callingsPipeline = callings.filter(c => c.stage !== "Completed");
+  const releasingsPipeline = releasings.filter(r => r.stage !== "Completed");
+  const callingsTotalActive = callingsPipeline.length;
+  const releasingsTotalActive = releasingsPipeline.length;
+  if (callingsTotalActive > 0 || releasingsTotalActive > 0 || approvedCallings > 0 || approvedReleasings > 0) {
+    lines.push("CALLINGS & RELEASINGS");
+    lines.push(`  Callings to Discuss: ${callingsTotalActive}`);
+    lines.push(`  Approved Callings: ${approvedCallings}`);
+    lines.push(`  Releasings to Discuss: ${releasingsTotalActive}`);
+    lines.push(`  Approved Releasings: ${approvedReleasings}`);
+    lines.push("");
+  }
+
+  if (topics.length) {
+    lines.push("DISCUSSION TOPICS");
+    topics.forEach(t => lines.push(topic(t)));
+    lines.push("");
+  }
+
+  if (tasks.length) {
+    lines.push("ASSIGNMENTS");
+    tasks.forEach(t => lines.push(task(t)));
+    lines.push("");
+  }
+
+  lines.push("CLOSING");
+  lines.push(assign("Closing Prayer", getItem("closing_prayer")?.assignee));
+  lines.push(divider);
+  return lines;
+}
+
+function buildWCAgendaLines(wcData, date, spiritLabel, getItem, sLabel, divider) {
+  const val    = (v) => (v && v !== "_unassigned_") ? v : "—";
+  const assign = (label, value) => `  ${label}: ${val(value)}`;
+  const topic  = (t) => t.done ? `  ✓ ${t.notes||t.customLabel||t.label}` : `  — ${t.notes||t.customLabel||t.label}`;
+  const task   = (t) => t.done ? `  ✓ ${t.customLabel||t.label} (${t.assignee||"unassigned"})` : `  — ${t.customLabel||t.label} (${t.assignee||"unassigned"})`;
+  const songRow = getItem("opening_song");
+  const songNum = songRow?.notes || "";
+  const songTitle = songRow?.customLabel || "";
+
+
+  const dayData = wcData.filter(r => r.date === date);
+  const topics  = dayData.filter(r => r.itemKey && r.itemKey.startsWith("topic_"));
+  const tasks   = dayData.filter(r => r.itemKey && r.itemKey.startsWith("task_"));
+
+  const lines = [
+    divider,
+    "OPENING",
+    `  Opening Song: ${(songRow?.assignee && songRow.assignee !== "_unassigned_") ? songRow.assignee : "—"}`,
+    assign("Opening Prayer", getItem("opening_prayer")?.assignee),
+    assign(sLabel, getItem("spirit_thought")?.assignee),
+    "",
+  ];
+
+  if (topics.length) {
+    lines.push("DISCUSSION TOPICS");
+    topics.forEach(t => lines.push(topic(t)));
+    lines.push("");
+  }
+
+  if (tasks.length) {
+    lines.push("ASSIGNMENTS");
+    tasks.forEach(t => lines.push(task(t)));
+    lines.push("");
+  }
+
+  lines.push("CLOSING");
+  lines.push(assign("Closing Prayer", getItem("closing_prayer")?.assignee));
+  lines.push(divider);
+  return lines;
+}
+
 function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, releasings, sacramentProgram, calendar=[], roster=[], token="", onNavigate , onSaveStart, onSaveEnd }) {
   const today = localDateStr(new Date());
   // Find next Sunday
@@ -2098,28 +2251,37 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
 
     // Assignments only — the four people-facing roles for the meeting
     const assign = (label, value) => (value && value !== "_unassigned_") ? `${label}: ${value}` : null;
+    const songEntry = (songRow?.assignee && songRow.assignee !== "_unassigned_")
+      ? `Opening Song: ${songRow.assignee}` : null;
     const assignments = [
-      assign("Opening Song",  songRow?.assignee),
+      songEntry,
       assign("Opening Prayer", getItem("opening_prayer")?.assignee),
       assign(sLabel,           getItem("spirit_thought")?.assignee),
       assign("Closing Prayer", getItem("closing_prayer")?.assignee),
     ].filter(Boolean);
 
     const divider = "─────────────────────────────";
-    const bodyLines = [
+
+    // Full agenda body
+    const agendaLines = buildBMAgendaLines(bmData, selectedDate, callings, releasings, sacramentProgram, spiritLabel, getItem, sLabel, songLine, organist, chorister, speakers, approvedCallings, approvedReleasings, divider, songRow);
+    // Assignments only body
+    const assignmentLines = [
       divider,
-      assignments.length ? assignments.join("\n") : "_No assignments set_",
+      "ASSIGNMENTS",
+      ...(assignments.length
+        ? assignments.map(a => `  ${a}`)
+        : ["  No assignments set"]),
       divider,
-      `_Ward Manager · ${config.WARD_NAME}_`,
     ];
 
-    setSlackDraft({ firstLine: `*Bishopric Meeting — ${toDisplayDate(selectedDate)}*`, bodyLines, relayURL, channelKey: webhookURL, channelName });
+    setSlackDraft({ firstLine: `Bishopric Council — ${toDisplayDate(selectedDate)}`, agendaLines, assignmentLines, relayURL, channelKey: webhookURL, channelName, mode: "assignments" });
   };
 
   // Actually send after user confirms in modal
   const doConfirmSlack = async (firstLine) => {
     if (!slackDraft) return;
-    const { bodyLines, relayURL, channelKey, channelName } = slackDraft;
+    const { agendaLines, assignmentLines, relayURL, channelKey, channelName, mode } = slackDraft;
+    const bodyLines = mode === "agenda" ? agendaLines : assignmentLines;
     const text = [firstLine, ...bodyLines].join("\n");
     setSending(true);
     try {
@@ -2131,7 +2293,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
       });
       const data = await res.json().catch(() => ({ ok: false }));
       if (data.ok) {
-        notify.success(`Agenda sent to #${channelName}`);
+        notify.success(`Sent to #${channelName}`);
         setSlackDraft(null);
       } else {
         notify.error(`Slack error: ${data.message || res.status}`);
@@ -2575,7 +2737,10 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
           <SlackPreviewModal
             firstLine={fl}
             setFirstLine={setFl}
-            bodyLines={slackDraft.bodyLines}
+            agendaLines={slackDraft.agendaLines}
+            assignmentLines={slackDraft.assignmentLines}
+            mode={slackDraft.mode || "assignments"}
+            onModeChange={m => setSlackDraft(d => ({...d, mode: m}))}
             channelName={slackDraft.channelName}
             sending={sending}
             onConfirm={() => doConfirmSlack(fl)}
@@ -3332,6 +3497,9 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
 
     const sLabel = spiritLabel === "handbook_review" ? "Handbook Review" : "Spiritual Thought";
     const songRow = getItem("opening_song");
+    const songNum = songRow?.notes || "";
+    const songTitle = songRow?.customLabel || "";
+    const songLine = [songNum, songTitle].filter(Boolean).join(" — ") || "";
     const assign = (label, value) => (value && value !== "_unassigned_") ? `${label}: ${value}` : null;
     const assignments = [
       assign("Opening Song",  songRow?.assignee),
@@ -3341,18 +3509,26 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     ].filter(Boolean);
 
     const divider = "─────────────────────────────";
-    const bodyLines = [
+
+    // Full agenda body
+    const agendaLines = buildWCAgendaLines(wcData, selectedDate, spiritLabel, getItem, sLabel, divider);
+    // Assignments only body
+    const assignmentLines = [
       divider,
-      assignments.length ? assignments.join("\n") : "_No assignments set_",
+      "ASSIGNMENTS",
+      ...(assignments.length
+        ? assignments.map(a => `  ${a}`)
+        : ["  No assignments set"]),
       divider,
-      `_Ward Manager · ${config.WARD_NAME}_`,
     ];
-    setSlackDraft({ firstLine: `*Ward Council — ${toDisplayDate(selectedDate)}*`, bodyLines, relayURL, channelKey: webhookURL, channelName });
+
+    setSlackDraft({ firstLine: `Ward Council — ${toDisplayDate(selectedDate)}`, agendaLines, assignmentLines, relayURL, channelKey: webhookURL, channelName, mode: "assignments" });
   };
 
   const doConfirmSlack = async (firstLine) => {
     if (!slackDraft) return;
-    const { bodyLines, relayURL, channelKey, channelName } = slackDraft;
+    const { agendaLines, assignmentLines, relayURL, channelKey, channelName, mode } = slackDraft;
+    const bodyLines = mode === "agenda" ? agendaLines : assignmentLines;
     const text = [firstLine, ...bodyLines].join("\n");
     setSending(true);
     try {
@@ -3364,7 +3540,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
       });
       const data = await res.json().catch(() => ({ ok: false }));
       if (data.ok) {
-        notify.success(`Agenda sent to #${channelName}`);
+        notify.success(`Sent to #${channelName}`);
         setSlackDraft(null);
       } else {
         notify.error(`Slack error: ${data.message || res.status}`);
@@ -3394,7 +3570,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
             <RotateCcw size={12}/> Auto-assign
           </button>
           </>)}
-          <button onClick={doSave} disabled={wcSaveStatus === "saving" || !hasData}
+          <button onClick={doSave} disabled={wcSaveStatus === "saving" || wcSaveStatus === "pushing" || !hasData}
             style={{ background: "rgba(255,255,255,.18)", border: "1.5px solid rgba(255,255,255,.4)", color: "#fff", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 600, cursor: wcSaveStatus === "saving" || !hasData ? "not-allowed" : "pointer", opacity: wcSaveStatus === "saving" || !hasData ? .5 : 1, display: "flex", alignItems: "center", gap: 6 }}>
             <Save size={13}/> {wcSaveStatus === "saving" ? "Saving…" : "Save"}
           </button>
@@ -3665,7 +3841,10 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
           <SlackPreviewModal
             firstLine={fl}
             setFirstLine={setFl}
-            bodyLines={slackDraft.bodyLines}
+            agendaLines={slackDraft.agendaLines}
+            assignmentLines={slackDraft.assignmentLines}
+            mode={slackDraft.mode || "assignments"}
+            onModeChange={m => setSlackDraft(d => ({...d, mode: m}))}
             channelName={slackDraft.channelName}
             sending={sending}
             onConfirm={() => doConfirmSlack(fl)}
@@ -4330,7 +4509,7 @@ function AlertsTab({appointments, callings, releasings, isMobile=false}){
       }
     });
     const divider = "─────────────────────────────";
-    const footer  = `_${preview.length} record${preview.length===1?"":"s"} · ${source} · Ward Manager_`;
+    const footer  = `_${preview.length} record${preview.length===1?"":"s"} · ${source}_`;
     const body    = itemLines.length > 0 ? itemLines.join("\n") : "_No records found_";
     return [divider, body, divider, footer];
   };
@@ -4543,7 +4722,7 @@ ${preview.map(item=>{
   }
 }).join("\n")}
 ─────────────────────────────
-${preview.length} record${preview.length===1?"":"s"} · ${source} · Ward Manager`}
+${preview.length} record${preview.length===1?"":"s"} · ${source}`}
               </pre>
             </div>
           )}
@@ -4558,7 +4737,10 @@ ${preview.length} record${preview.length===1?"":"s"} · ${source} · Ward Manage
           <SlackPreviewModal
             firstLine={fl}
             setFirstLine={setFl}
-            bodyLines={slackDraft.bodyLines}
+            agendaLines={slackDraft.bodyLines}
+            assignmentLines={slackDraft.bodyLines}
+            mode="assignments"
+            onModeChange={null}
             channelName={slackDraft.channelName}
             sending={sending1||sending2}
             onConfirm={() => doConfirmSlack(fl)}

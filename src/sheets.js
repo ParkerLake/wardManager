@@ -102,19 +102,39 @@ const rowsToMembers = rowsToNotes;
 
 function rowsToMeeting(rows) {
   if (!rows || rows.length < 2) return [];
-  return rows.slice(1)
-    .filter(r => r[0] || r[1] || r[2])
-    .map((r, i) => ({
-      id: `mt_${i}`, topic: r[0]||"", owner: r[1]||"",
-      status: r[2]||"", notes: r[3]||"",
-    }));
+  const header = rows[0];
+  // Detect old format (Topic|Owner|Status|Notes) vs new (Date|ItemKey|...)
+  const isNewFormat = header[0] === "Date" && header[1] === "ItemKey";
+  if (isNewFormat) {
+    return rows.slice(1)
+      .filter(r => r[0] || r[1]) // must have date or itemKey
+      .map((r, i) => ({
+        id: `mt_${i}`,
+        date: r[0]||"",
+        itemKey: r[1]||"",
+        assignee: r[2]||"",
+        done: r[3] === "true",
+        notes: r[4]||"",
+        customLabel: r[5]||"",
+        spiritToggle: r[6]||"",
+      }));
+  }
+  // Legacy format — return empty so app creates fresh agenda
+  return [];
 }
 
 function meetingToRows(data) {
-  return [
-    ["Topic", "Owner", "Status", "Notes"],
-    ...data.map(m => [m.topic, m.owner, m.status||"", m.notes||""]),
+  const rows = [
+    ["Date", "ItemKey", "Assignee", "Done", "Notes", "CustomLabel", "SpiritToggle"],
+    ...data.map(r => [
+      r.date||"", r.itemKey||"", r.assignee||"",
+      r.done ? "true" : "false",
+      r.notes||"", r.customLabel||"", r.spiritToggle||"",
+    ]),
   ];
+  // Pad to 500 rows to clear any trailing stale rows
+  while (rows.length < 500) rows.push(["","","","","","",""]);
+  return rows;
 }
 
 function rowsToLinks(rows) {
@@ -134,7 +154,7 @@ export async function pullAll() {
     bishopricReq("Callings!A:D").then(r => rowsToCallings(r.values)),
     bishopricReq("Releasings!A:D").then(r => rowsToCallings(r.values)),
     bishopricReq("Notes!A:E").then(r => rowsToNotes(r.values)),
-    bishopricReq("BishopricMeeting!A:D").then(r => rowsToMeeting(r.values)),
+    bishopricReq("BishopricMeeting!A:G").then(r => rowsToMeeting(r.values)),
   ]);
   return { appointments: appts, callings, releasings, members, bishopricMeeting: meeting };
 }
@@ -168,7 +188,7 @@ export async function pullSacramentProgram() {
 }
 
 export async function pullWardCouncilMeeting() {
-  const r = await wcReq("WardCouncilMeeting!A:D");
+  const r = await wcReq("WardCouncilMeeting!A:G");
   return { wardCouncilMeeting: rowsToMeeting(r.values) };
 }
 
@@ -207,11 +227,11 @@ export async function pushAll({ appointments, callings, releasings, members }) {
 }
 
 export async function pushBishopricMeeting(data) {
-  await clearAndWrite(SID(), "BishopricMeeting!A:D", meetingToRows(data));
+  await clearAndWrite(SID(), "BishopricMeeting!A:G", meetingToRows(data));
 }
 
 export async function pushWardCouncilMeeting(data) {
-  await clearAndWrite(WCID(), "WardCouncilMeeting!A:D", meetingToRows(data));
+  await clearAndWrite(WCID(), "WardCouncilMeeting!A:G", meetingToRows(data));
 }
 
 export async function pushSacramentProgram(rows) {
