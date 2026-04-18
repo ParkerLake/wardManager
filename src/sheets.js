@@ -117,6 +117,7 @@ function rowsToMeeting(rows) {
         notes: r[4]||"",
         customLabel: r[5]||"",
         spiritToggle: r[6]||"",
+        topicOrder: r[7] !== undefined && r[7] !== "" ? parseInt(r[7]) : undefined,
       }));
   }
   // Legacy format — return empty so app creates fresh agenda
@@ -125,15 +126,16 @@ function rowsToMeeting(rows) {
 
 function meetingToRows(data) {
   const rows = [
-    ["Date", "ItemKey", "Assignee", "Done", "Notes", "CustomLabel", "SpiritToggle"],
+    ["Date", "ItemKey", "Assignee", "Done", "Notes", "CustomLabel", "SpiritToggle", "TopicOrder"],
     ...data.map(r => [
       r.date||"", r.itemKey||"", r.assignee||"",
       r.done ? "true" : "false",
       r.notes||"", r.customLabel||"", r.spiritToggle||"",
+      r.topicOrder !== undefined ? String(r.topicOrder) : "",
     ]),
   ];
   // Pad to 500 rows to clear any trailing stale rows
-  while (rows.length < 500) rows.push(["","","","","","",""]);
+  while (rows.length < 500) rows.push(["","","","","","","",""]);
   return rows;
 }
 
@@ -154,7 +156,7 @@ export async function pullAll() {
     bishopricReq("Callings!A:D").then(r => rowsToCallings(r.values)),
     bishopricReq("Releasings!A:D").then(r => rowsToCallings(r.values)),
     bishopricReq("Notes!A:E").then(r => rowsToNotes(r.values)),
-    bishopricReq("BishopricMeeting!A:G").then(r => rowsToMeeting(r.values)),
+    bishopricReq("BishopricMeeting!A:H").then(r => rowsToMeeting(r.values)),
   ]);
   return { appointments: appts, callings, releasings, members, bishopricMeeting: meeting };
 }
@@ -188,7 +190,7 @@ export async function pullSacramentProgram() {
 }
 
 export async function pullWardCouncilMeeting() {
-  const r = await wcReq("WardCouncilMeeting!A:G");
+  const r = await wcReq("WardCouncilMeeting!A:H");
   return { wardCouncilMeeting: rowsToMeeting(r.values) };
 }
 
@@ -227,11 +229,11 @@ export async function pushAll({ appointments, callings, releasings, members }) {
 }
 
 export async function pushBishopricMeeting(data) {
-  await clearAndWrite(SID(), "BishopricMeeting!A:G", meetingToRows(data));
+  await clearAndWrite(SID(), "BishopricMeeting!A:H", meetingToRows(data));
 }
 
 export async function pushWardCouncilMeeting(data) {
-  await clearAndWrite(WCID(), "WardCouncilMeeting!A:G", meetingToRows(data));
+  await clearAndWrite(WCID(), "WardCouncilMeeting!A:H", meetingToRows(data));
 }
 
 export async function pushSacramentProgram(rows) {

@@ -1121,12 +1121,12 @@ function MainApp({ user, token, onSignOut }) {
             } catch(e){ notify.error("Save failed: "+e.message,6000); }
             finally { pipelineDirty.current=false; }
           }}/>}
-        {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab} onSaveStart={()=>{bmDirty.current=true;}} onSaveEnd={()=>{bmDirty.current=false;}}/>}
+        {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isMobile={isMobile} onSaveStart={()=>{bmDirty.current=true;}} onSaveEnd={()=>{bmDirty.current=false;}}/>}
         {isAdmin&&tab==="notes"       &&<NotesTab    data={members}  setData={setMembers}/>}
         {isAdmin&&tab==="alerts"      &&<AlertsTab appointments={appointments} callings={callings} releasings={releasings} isMobile={isMobile}/>}
         {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} isMobile={isMobile} onSaveStart={()=>{sacrDirty.current=true;}} onSaveEnd={()=>{sacrDirty.current=false;}}/>}
         {(isAdmin||isWardCouncil)&&tab==="calendar"&&<CalendarTab calendar={calendar} setCalendar={setCalendar} token={token} isMobile={isMobile} onSaveStart={()=>{calendarDirty.current=true;}} onSaveEnd={()=>{calendarDirty.current=false;}}/>}
-        {(isAdmin||isWardCouncil)&&tab==="ward-council"&&<WardCouncilTab wardCouncilMeeting={wardCouncilMeeting} setWardCouncilMeeting={setWardCouncilMeeting} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isAdmin={isAdmin} onSaveStart={()=>{wcDirty.current=true;}} onSaveEnd={()=>{wcDirty.current=false;}}/>}
+        {(isAdmin||isWardCouncil)&&tab==="ward-council"&&<WardCouncilTab wardCouncilMeeting={wardCouncilMeeting} setWardCouncilMeeting={setWardCouncilMeeting} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isAdmin={isAdmin} isMobile={isMobile} onSaveStart={()=>{wcDirty.current=true;}} onSaveEnd={()=>{wcDirty.current=false;}}/>}
         {(isAdmin||isWardCouncil)&&tab==="links"&&<LinksTab bishopricLinks={isAdmin?bishopricLinks:null} setBishopricLinks={setBishopricLinks} wcLinks={wcLinks} setWcLinks={setWcLinks} token={token} isAdmin={isAdmin}/>}
         {!isAdmin&&!isWardCouncil&&<UnauthorizedView/>}
       </main>
@@ -1927,7 +1927,7 @@ function buildWCAgendaLines(wcData, date, spiritLabel, getItem, sLabel, divider)
   return lines;
 }
 
-function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, releasings, sacramentProgram, calendar=[], roster=[], token="", onNavigate , onSaveStart, onSaveEnd }) {
+function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, releasings, sacramentProgram, calendar=[], roster=[], token="", onNavigate, isMobile=false, onSaveStart, onSaveEnd }) {
   const today = localDateStr(new Date());
   // Find next Sunday
   const nextSundayDate = getUpcomingSunday();
@@ -2131,14 +2131,17 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   // Stored as JSON [{id, text, done}] in discussion row's notes.
   // Falls back gracefully from old newline-separated plain text.
   // Discussion topics — each is its own row with itemKey "topic_<id>"
+  // Preserve array order — sort by topicOrder field, fallback to id for legacy rows
   const discussionTopics = dateItems
     .filter(r => r.itemKey.startsWith("topic_"))
-    .sort((a, b) => a.id < b.id ? -1 : 1);
+    .sort((a, b) => (a.topicOrder ?? a.id) < (b.topicOrder ?? b.id) ? -1 : 1);
 
   const addTopic = (text) => {
     if (!text.trim()) return;
     const id = `topic_${Date.now()}`;
-    const newRow = { id: `bm_${id}`, date: selectedDate, itemKey: id, assignee: "", done: false, notes: text.trim(), customLabel: "", spiritToggle: "" };
+    const maxOrder = discussionTopics.length > 0
+      ? Math.max(...discussionTopics.map(t => t.topicOrder ?? 0)) : -1;
+    const newRow = { id: `bm_${id}`, date: selectedDate, itemKey: id, assignee: "", done: false, notes: text.trim(), customLabel: "", spiritToggle: "", topicOrder: maxOrder + 1 };
     const newData = [...bmData, newRow];
     setBmData(newData); setBishopricMeeting(newData);
     bmMarkDirty(`${selectedDate}|${id}`);
@@ -2153,6 +2156,15 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
     const newData = bmData.filter(r => !(r.date === selectedDate && r.itemKey === id));
     setBmData(newData); setBishopricMeeting(newData);
     bmMarkDirty(`${selectedDate}|${id}`);
+  };
+
+  const reorderTopics = (reordered) => {
+    // Stamp topicOrder so the sort is stable after save/reload
+    const stamped = reordered.map((r, i) => ({ ...r, topicOrder: i }));
+    const otherRows = bmData.filter(r => !(r.date === selectedDate && r.itemKey.startsWith("topic_")));
+    const newData = [...otherRows, ...stamped];
+    setBmData(newData); setBishopricMeeting(newData);
+    stamped.forEach(r => bmMarkDirty(`${selectedDate}|${r.itemKey}`));
   };
 
   // ── Outstanding tasks ──
@@ -2693,19 +2705,13 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
                       {/* Discussion topics checklist */}
                       {tmpl.isList && (
                         <div style={{ marginTop: 8 }}>
-                          {discussionTopics.length === 0 && (
-                            <div style={{ fontSize: 12, color: C.textMuted, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontStyle: "italic", marginBottom: 8 }}>No topics yet</div>
-                          )}
-                          {discussionTopics.map(topic => (
-                            <div key={topic.itemKey} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                              <button onClick={() => toggleTopic(topic.itemKey)}
-                                style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${topic.done ? C.green25 : C.border}`, background: topic.done ? C.green25 : "transparent", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                {topic.done && <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                              </button>
-                              <span style={{ flex: 1, fontSize: 13, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: topic.done ? C.textMuted : C.textPrimary, textDecoration: topic.done ? "line-through" : "none" }}>{topic.notes}</span>
-                              <button onClick={() => removeTopic(topic.itemKey)} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, display: "flex", alignItems: "center" }}><X size={13}/></button>
-                            </div>
-                          ))}
+                          <ReorderableTopics
+                            topics={discussionTopics}
+                            onToggle={toggleTopic}
+                            onRemove={removeTopic}
+                            onReorder={reorderTopics}
+                            isMobile={isMobile}
+                          />
                           <AddTopicRow onAdd={addTopic}/>
                         </div>
                       )}
@@ -2868,6 +2874,127 @@ function PrayerListModal({ data, loading, sheetUrl, onClose, onRefresh }) {
     </div>
   );
 }
+
+// ── Reorderable discussion topics list ───────────────────────────────────────
+function ReorderableTopics({ topics, onToggle, onRemove, onReorder, isMobile }) {
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
+
+  const move = (from, to) => {
+    if (from === to || to < 0 || to >= topics.length) return;
+    const next = [...topics];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    onReorder(next);
+  };
+
+  const handleDragStart = (e, idx) => {
+    setDragIdx(idx);
+    e.dataTransfer.effectAllowed = "move";
+  };
+  const handleDragEnd = () => {
+    if (dragIdx !== null && overIdx !== null && dragIdx !== overIdx) {
+      move(dragIdx, overIdx);
+    }
+    setDragIdx(null);
+    setOverIdx(null);
+  };
+  const handleDragOver = (e, idx) => {
+    e.preventDefault();
+    setOverIdx(idx);
+  };
+
+  if (topics.length === 0) {
+    return <div style={{ fontSize: 12, color: C.textMuted, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontStyle: "italic", marginBottom: 8 }}>No topics yet</div>;
+  }
+
+  return (
+    <div style={{ marginBottom: 4 }}>
+      {topics.map((topic, idx) => {
+        const isLast  = idx === topics.length - 1;
+        const isOver  = overIdx === idx && dragIdx !== null && dragIdx !== idx;
+        return (
+          <div
+            key={topic.itemKey}
+            draggable={!isMobile}
+            onDragStart={e => handleDragStart(e, idx)}
+            onDragEnd={handleDragEnd}
+            onDragOver={e => handleDragOver(e, idx)}
+            onDragLeave={() => setOverIdx(null)}
+            style={{
+              display: "flex", alignItems: "center", gap: 8, marginBottom: 6,
+              opacity: dragIdx === idx ? 0.35 : 1,
+              borderTop: isOver ? `2px solid ${C.blue35}` : "2px solid transparent",
+              transition: "border-color .1s",
+              cursor: isMobile ? "default" : "grab",
+            }}
+          >
+            {/* Up / down arrows — always shown, both mobile and desktop */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 1, flexShrink: 0 }}>
+              <button
+                disabled={idx === 0}
+                onClick={() => move(idx, idx - 1)}
+                style={{
+                  background: "none", border: `1px solid ${C.borderLight}`, borderRadius: 3,
+                  width: 20, height: 16, padding: 0,
+                  cursor: idx === 0 ? "not-allowed" : "pointer",
+                  opacity: idx === 0 ? .25 : 1,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  color: C.textSecond, flexShrink: 0,
+                }}>
+                <ChevronUp size={9}/>
+              </button>
+              <button
+                disabled={isLast}
+                onClick={() => move(idx, idx + 1)}
+                style={{
+                  background: "none", border: `1px solid ${C.borderLight}`, borderRadius: 3,
+                  width: 20, height: 16, padding: 0,
+                  cursor: isLast ? "not-allowed" : "pointer",
+                  opacity: isLast ? .25 : 1,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  color: C.textSecond, flexShrink: 0,
+                }}>
+                <ChevronDown size={9}/>
+              </button>
+            </div>
+
+            {/* Grip handle — desktop only, decorative */}
+            {!isMobile && (
+              <div style={{ color: C.textLight, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                <GripVertical size={12}/>
+              </div>
+            )}
+
+            {/* Checkbox */}
+            <button onClick={() => onToggle(topic.itemKey)}
+              style={{ width: 18, height: 18, borderRadius: 4, flexShrink: 0,
+                border: `2px solid ${topic.done ? C.green25 : C.border}`,
+                background: topic.done ? C.green25 : "transparent",
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              {topic.done && <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+            </button>
+
+            {/* Topic text */}
+            <span style={{ flex: 1, fontSize: 13, fontFamily: "'Helvetica Neue',Arial,sans-serif",
+              color: topic.done ? C.textMuted : C.textPrimary,
+              textDecoration: topic.done ? "line-through" : "none" }}>
+              {topic.notes}
+            </span>
+
+            {/* Remove */}
+            <button onClick={() => onRemove(topic.itemKey)}
+              style={{ background: "none", border: "none", cursor: "pointer",
+                color: C.textLight, display: "flex", alignItems: "center" }}>
+              <X size={13}/>
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 
 function AddTopicRow({ onAdd }) {
   const [val, setVal] = useState("");
@@ -3236,7 +3363,7 @@ const WC_TEMPLATE = [
   { itemKey: "closing_prayer",   section: "Closing",   label: "Closing Prayer",          hasAssignee: true,  isStatic: true },
 ];
 
-function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[], roster=[], token="", onNavigate, isAdmin=false , onSaveStart, onSaveEnd }) {
+function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[], roster=[], token="", onNavigate, isAdmin=false, isMobile=false, onSaveStart, onSaveEnd }) {
   const today = localDateStr(new Date());
   const nextSundayDate = getUpcomingSunday();
 
@@ -3439,12 +3566,14 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
   // Discussion topics — each is its own row with itemKey "topic_<id>"
   const discussionTopics = dateItems
     .filter(r => r.itemKey.startsWith("topic_"))
-    .sort((a, b) => a.id < b.id ? -1 : 1);
+    .sort((a, b) => (a.topicOrder ?? a.id) < (b.topicOrder ?? b.id) ? -1 : 1);
 
   const addTopic = (text) => {
     if (!text.trim()) return;
     const id = `topic_${Date.now()}`;
-    const newRow = { id: `wc_${id}`, date: selectedDate, itemKey: id, assignee: "", done: false, notes: text.trim(), customLabel: "", spiritToggle: "" };
+    const maxOrder = discussionTopics.length > 0
+      ? Math.max(...discussionTopics.map(t => t.topicOrder ?? 0)) : -1;
+    const newRow = { id: `wc_${id}`, date: selectedDate, itemKey: id, assignee: "", done: false, notes: text.trim(), customLabel: "", spiritToggle: "", topicOrder: maxOrder + 1 };
     const newData = [...wcData, newRow];
     setWcData(newData); setWardCouncilMeeting(newData);
     wcMarkDirty(`${selectedDate}|${id}`);
@@ -3457,6 +3586,14 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     const newData = wcData.filter(r => !(r.date === selectedDate && r.itemKey === id));
     setWcData(newData); setWardCouncilMeeting(newData);
     wcMarkDirty(`${selectedDate}|${id}`);
+  };
+
+  const reorderTopics = (reordered) => {
+    const stamped = reordered.map((r, i) => ({ ...r, topicOrder: i }));
+    const otherRows = wcData.filter(r => !(r.date === selectedDate && r.itemKey.startsWith("topic_")));
+    const newData = [...otherRows, ...stamped];
+    setWcData(newData); setWardCouncilMeeting(newData);
+    stamped.forEach(r => wcMarkDirty(`${selectedDate}|${r.itemKey}`));
   };
 
   const toggleTask = (id) => {
@@ -3766,22 +3903,14 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
                       {/* Discussion topics */}
                       {tmpl.isList && (
                         <div style={{ marginTop: 8 }}>
-                          {discussionTopics.length === 0 && (
-                            <div style={{ fontSize: 12, color: C.textMuted, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontStyle: "italic", marginBottom: 8 }}>No topics yet</div>
-                          )}
-                          {discussionTopics.map(topic => (
-                            <div key={topic.itemKey} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                              <button onClick={() => toggleTopic(topic.itemKey)}
-                                style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${topic.done ? C.green25 : C.border}`, background: topic.done ? C.green25 : "transparent", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                {topic.done && <svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                              </button>
-                              <span style={{ flex: 1, fontSize: 13, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: topic.done ? C.textMuted : C.textPrimary, textDecoration: topic.done ? "line-through" : "none" }}>{topic.notes}</span>
-                              <button onClick={() => removeTopic(topic.itemKey)} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, display: "flex", alignItems: "center" }}><X size={13}/></button>
-                            </div>
-                          ))}
-                          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                            <AddTopicRow onAdd={addTopic}/>
-                          </div>
+                          <ReorderableTopics
+                            topics={discussionTopics}
+                            onToggle={toggleTopic}
+                            onRemove={removeTopic}
+                            onReorder={reorderTopics}
+                            isMobile={isMobile}
+                          />
+                          <AddTopicRow onAdd={addTopic}/>
                         </div>
                       )}
 
