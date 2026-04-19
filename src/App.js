@@ -5484,9 +5484,17 @@ function SacramentPrintView({ program, date, onClose }) {
   </div>
   ${bodyRows}
   <div class="sp-footer">The Church of Jesus Christ of Latter-day Saints</div>
-  <script>
-    window.onload = function() { window.print(); };
-  </script>
+  <div style="position:fixed;top:16px;right:16px;z-index:999;display:flex;gap:10px;">
+    <button onclick="window.print()" style="padding:10px 20px;background:#003057;color:#fff;border:none;border-radius:8px;font-size:15px;font-family:sans-serif;font-weight:600;cursor:pointer;">
+      Print
+    </button>
+    <button onclick="window.close()" style="padding:10px 20px;background:#f0f0f0;color:#333;border:1px solid #ccc;border-radius:8px;font-size:15px;font-family:sans-serif;font-weight:600;cursor:pointer;">
+      Close
+    </button>
+  </div>
+  <style>
+    @media print { div[style*="position:fixed"] { display:none !important; } }
+  </style>
 </body>
 </html>`;
 
