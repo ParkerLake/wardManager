@@ -805,6 +805,7 @@ function MainApp({ user, token, onSignOut }) {
 
   // Sacrament save — called by SacramentTab's useMeetingSync hook
   const doSacramentSave = useCallback(async(data) => {
+    // No longer used as primary save — SacramentTab handles per-date saves directly
     if(!pulledRef.current) return;
     await pushSacrament( data ?? sacrRef.current);
   },[]);
@@ -840,16 +841,34 @@ function MainApp({ user, token, onSignOut }) {
   useEffect(()=>{
     const prev=prevTabRef.current;
     // Leaving Sacrament — pull fresh sacrament data
-    if(prev==="sacrament"&&tab!=="sacrament"&&pulledRef.current){
-      pullSacrament().then(sp=>{
-        if(sp.sacramentProgram){setSacrament(sp.sacramentProgram);sacrRef.current=sp.sacramentProgram;}
-      }).catch(()=>{});
+    // Guard with sacrDirty to avoid racing with a save in flight
+    if(prev==="sacrament"&&tab!=="sacrament"&&pulledRef.current&&!sacrDirty.current){
+      setTimeout(() => {
+        if(!sacrDirty.current) {
+          pullSacrament().then(sp=>{
+            if(sp.sacramentProgram&&!sacrDirty.current){
+              setSacrament(sp.sacramentProgram);
+              sacrRef.current=sp.sacramentProgram;
+            }
+          }).catch(()=>{});
+        }
+      }, 1500);
     }
     // Leaving Bishopric — pull fresh bishopric meeting data (admin only)
-    if(prev==="bishopric"&&tab!=="bishopric"&&pulledRef.current&&isAdminRef.current){
-      pullAll().then(d=>{
-        if(d.bishopricMeeting){setBishopricMeeting(d.bishopricMeeting);bmRef.current=d.bishopricMeeting;}
-      }).catch(()=>{});
+    // Guard with bmDirty: if a save just fired, the pull may race and return
+    // stale data (done=false) which would overwrite the just-saved done=true.
+    if(prev==="bishopric"&&tab!=="bishopric"&&pulledRef.current&&isAdminRef.current&&!bmDirty.current){
+      // Small delay to let any in-flight save finish before pulling
+      setTimeout(() => {
+        if(!bmDirty.current) {
+          pullAll().then(d=>{
+            if(d.bishopricMeeting&&!bmDirty.current){
+              setBishopricMeeting(d.bishopricMeeting);
+              bmRef.current=d.bishopricMeeting;
+            }
+          }).catch(()=>{});
+        }
+      }, 1500);
     }
     prevTabRef.current=tab;
   },[tab]); // eslint-disable-line
@@ -1819,6 +1838,16 @@ const BM_SECTION_STYLE = {
 };
 
 
+// ── Save status indicator ─────────────────────────────────────────────────────
+function SaveStatusDot({ status }) {
+  if (status === "saved")   return <span style={{ fontSize:11, color:"#2e7d32", fontFamily:"'Helvetica Neue',Arial,sans-serif", display:"flex", alignItems:"center", gap:4 }}>✓ Saved</span>;
+  if (status === "saving")  return <span style={{ fontSize:11, color:C.blue25, fontFamily:"'Helvetica Neue',Arial,sans-serif" }}>Saving…</span>;
+  if (status === "unsaved") return <span style={{ fontSize:11, color:C.gold20, fontFamily:"'Helvetica Neue',Arial,sans-serif", display:"flex", alignItems:"center", gap:4 }}><span style={{width:6,height:6,borderRadius:"50%",background:C.gold20,display:"inline-block"}}/> Unsaved</span>;
+  if (status === "error")   return <span style={{ fontSize:11, color:C.red15, fontFamily:"'Helvetica Neue',Arial,sans-serif" }}>Save failed</span>;
+  return null;
+}
+
+
 // ── Slack agenda builders ─────────────────────────────────────────────────────
 function buildBMAgendaLines(bmData, date, callings, releasings, sacramentProgram, spiritLabel, getItem, sLabel, songLine, organist, chorister, speakers, approvedCallings, approvedReleasings, divider, songRow) {
   const val    = (v) => (v && v !== "_unassigned_") ? v : "—";
@@ -1934,7 +1963,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
 
   const [selectedDate, setSelectedDate] = useState(nextSundayDate);
   const [bmData, setBmData] = useState(bishopricMeeting);
-  const [syncStatus, setSyncStatus] = useState("idle");
+  // syncStatus replaced by bmSaveStatus from useMeetingSync
   const [sending, setSending] = useState(false);
   const [showOtherDate, setShowOtherDate] = useState(false);
   const [slackDraft, setSlackDraft] = useState(null); // {firstLine, bodyLines, relayURL, channelKey, channelName}
@@ -2068,31 +2097,6 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   // Create program from template — carries over unchecked discussion topics
   // and incomplete tasks from the most recent prior week.
   const createProgram = () => {
-    // Find the most recent prior date that has agenda data
-    const priorDates = [...new Set(bmData.map(r => r.date))]
-      .filter(d => d < selectedDate)
-      .sort()
-      .reverse();
-    const priorDate = priorDates[0] || null;
-
-    // Carry over unchecked discussion topics (each is now its own row)
-    const priorTopicRows = priorDate
-      ? bmData.filter(r => r.date === priorDate && r.itemKey.startsWith("topic_") && !r.done)
-      : [];
-    const carryTopicRows = priorTopicRows.map(r => ({
-      ...r, id: `bm_new_topic_carry_${Date.now()}_${r.id}`,
-      date: selectedDate,
-    }));
-
-    // Carry over incomplete tasks (each is now its own row)
-    const priorTaskRows = priorDate
-      ? bmData.filter(r => r.date === priorDate && r.itemKey.startsWith("task_") && !r.done)
-      : [];
-    const carryTaskRows = priorTaskRows.map(r => ({
-      ...r, id: `bm_new_task_carry_${Date.now()}_${r.id}`,
-      date: selectedDate,
-    }));
-
     const rows = BM_TEMPLATE.map(t => ({
       id: `bm_new_${t.itemKey}`,
       date: selectedDate,
@@ -2103,12 +2107,9 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
       customLabel: "",
       spiritToggle: t.itemKey === "spirit_thought" ? (isEvenWeek ? "handbook_review" : "spiritual_thought") : "",
     }));
-    const newData = [...bmData.filter(r => r.date !== selectedDate), ...rows, ...carryTopicRows, ...carryTaskRows];
+    const newData = [...bmData.filter(r => r.date !== selectedDate), ...rows];
     setBmData(newData);
     setBishopricMeeting(newData);
-    if (carryTopicRows.length || carryTaskRows.length) {
-      notify.info(`Carried over ${carryTopicRows.length} topic${carryTopicRows.length!==1?"s":""} and ${carryTaskRows.length} task${carryTaskRows.length!==1?"s":""} from last week`);
-    }
   };
 
   // Update a field for an itemKey on this date
@@ -2122,6 +2123,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
         next = [...prev, { id: `bm_${itemKey}_${Date.now()}`, date: selectedDate, itemKey, assignee: "", done: false, notes: "", customLabel: "", spiritToggle: "", [field]: value }];
       }
       setBishopricMeeting(next);
+      bmDataRef.current = next; // sync ref immediately so doSave gets fresh data
       return next;
     });
     bmMarkDirty(`${selectedDate}|${itemKey}`);
@@ -2148,8 +2150,9 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   };
 
   const toggleTopic = (id) => {
-    const key = id; // id IS the itemKey for topic rows
+    const key = id;
     updateItem(key, "done", !dateItems.find(r => r.itemKey === key)?.done);
+    setTimeout(() => doSave(), 100); // save immediately after state settles
   };
 
   const removeTopic = (id) => {
@@ -2185,6 +2188,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
 
   const toggleTask = (id) => {
     updateItem(id, "done", !dateItems.find(r => r.itemKey === id)?.done);
+    setTimeout(() => doSave(), 100);
   };
 
   const removeTask = (id) => {
@@ -2222,6 +2226,13 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
 
   const bmDataRef = useRef(bmData);
   useEffect(() => { bmDataRef.current = bmData; }, [bmData]);
+  // Base snapshot: what the user loaded initially — used for 3-way merge on save
+  const bmBaseRef = useRef(null);
+  useEffect(() => {
+    if (bmBaseRef.current === null && bishopricMeeting.length > 0) {
+      bmBaseRef.current = bishopricMeeting;
+    }
+  }, [bishopricMeeting]);
 
   const { markDirty: bmMarkDirty, doSave, saveStatus: bmSaveStatus,
           pendingCount: bmPendingCount, applyPending: bmApplyPending } = useMeetingSync({
@@ -2229,7 +2240,13 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
     saveFn:   async (data) => {
       if(onSaveStart) onSaveStart();
       const { pushBishopricMeeting } = await import("./sheets");
-      try { await pushBishopricMeeting(data); } finally { if(onSaveEnd) onSaveEnd(); }
+      const dateRows = data.filter(r => r.date === selectedDate);
+      const baseRows = (bmBaseRef.current || []).filter(r => r.date === selectedDate);
+      try {
+        await pushBishopricMeeting(dateRows, selectedDate, baseRows, data);
+        // Update base snapshot — next save uses saved state as the new baseline
+        bmBaseRef.current = data;
+      } finally { if(onSaveEnd) onSaveEnd(); }
     },
     pullFn:   async () => {
       const { pullAll } = await import("./sheets");
@@ -2373,10 +2390,11 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
             <RotateCcw size={12}/> Auto-assign
           </button>
 
-          <button onClick={doSave} disabled={syncStatus === "pushing" || !hasData}
-            style={{ background: "rgba(255,255,255,.18)", border: "1.5px solid rgba(255,255,255,.4)", color: "#fff", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 600, cursor: syncStatus === "pushing" || !hasData ? "not-allowed" : "pointer", opacity: syncStatus === "pushing" || !hasData ? .5 : 1, display: "flex", alignItems: "center", gap: 6 }}>
-            <Save size={13}/> {syncStatus === "pushing" ? "Saving…" : "Save"}
+          <button onClick={doSave} disabled={bmSaveStatus === "saving" || !hasData}
+            style={{ background: "rgba(255,255,255,.18)", border: "1.5px solid rgba(255,255,255,.4)", color: "#fff", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 600, cursor: bmSaveStatus === "saving" || !hasData ? "not-allowed" : "pointer", opacity: bmSaveStatus === "saving" || !hasData ? .5 : 1, display: "flex", alignItems: "center", gap: 6 }}>
+            <Save size={13}/> Save
           </button>
+          <SaveStatusDot status={bmSaveStatus}/>
         </div>
       </div>
 
@@ -2446,7 +2464,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
                 return (
                   <div key={tmpl.itemKey} style={{ padding: "14px 20px", borderBottom: isLast ? "none" : `1px solid ${C.borderLight}`, display: "flex", alignItems: "flex-start", gap: 16 }}>
                     {/* Done checkbox */}
-                    <button onClick={() => updateItem(tmpl.itemKey, "done", !(row?.done))}
+                    <button onClick={() => { updateItem(tmpl.itemKey, "done", !(row?.done)); setTimeout(() => doSave(), 100); }}
                       style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${row?.done ? C.green25 : C.border}`, background: row?.done ? C.green25 : "transparent", cursor: "pointer", flexShrink: 0, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "center" }}>
                       {row?.done && <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                     </button>
@@ -3473,6 +3491,12 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
   // Data ref — prevents stale closures in useMeetingSync
   const wcDataRef = useRef(wcData);
   useEffect(() => { wcDataRef.current = wcData; }, [wcData]);
+  const wcBaseRef = useRef(null);
+  useEffect(() => {
+    if (wcBaseRef.current === null && wardCouncilMeeting.length > 0) {
+      wcBaseRef.current = wardCouncilMeeting;
+    }
+  }, [wardCouncilMeeting]);
 
   // ── Meeting sync ──
   const wcDiff = useCallback((local, remote) => {
@@ -3498,7 +3522,12 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     saveFn:   async (data) => {
       if(onSaveStart) onSaveStart();
       const { pushWardCouncilMeeting } = await import("./sheets");
-      try { await pushWardCouncilMeeting(data); } finally { if(onSaveEnd) onSaveEnd(); }
+      const dateRows = data.filter(r => r.date === selectedDate);
+      const baseRows = (wcBaseRef.current || []).filter(r => r.date === selectedDate);
+      try {
+        await pushWardCouncilMeeting(dateRows, selectedDate, baseRows, data);
+        wcBaseRef.current = data;
+      } finally { if(onSaveEnd) onSaveEnd(); }
     },
     pullFn:   async () => {
       const { pullWardCouncilMeeting } = await import("./sheets");
@@ -3511,24 +3540,6 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
   });
 
   const createProgram = () => {
-    const priorDates = [...new Set(wcData.map(r => r.date))]
-      .filter(d => d < selectedDate).sort().reverse();
-    const priorDate = priorDates[0] || null;
-
-    const priorTopicRows = priorDate
-      ? wcData.filter(r => r.date === priorDate && r.itemKey.startsWith("topic_") && !r.done)
-      : [];
-    const carryTopicRows = priorTopicRows.map(r => ({
-      ...r, id: `wc_new_topic_carry_${Date.now()}_${r.id}`, date: selectedDate,
-    }));
-
-    const priorTaskRows = priorDate
-      ? wcData.filter(r => r.date === priorDate && r.itemKey.startsWith("task_") && !r.done)
-      : [];
-    const carryTaskRows = priorTaskRows.map(r => ({
-      ...r, id: `wc_new_task_carry_${Date.now()}_${r.id}`, date: selectedDate,
-    }));
-
     const rows = WC_TEMPLATE.map(t => ({
       id: `wc_new_${t.itemKey}`,
       date: selectedDate,
@@ -3539,12 +3550,9 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
       customLabel: "",
       spiritToggle: t.itemKey === "spirit_thought" ? (isEvenWeek ? "handbook_review" : "spiritual_thought") : "",
     }));
-    const newData = [...wcData.filter(r => r.date !== selectedDate), ...rows, ...carryTopicRows, ...carryTaskRows];
+    const newData = [...wcData.filter(r => r.date !== selectedDate), ...rows];
     setWcData(newData);
     setWardCouncilMeeting(newData);
-    if (carryTopicRows.length || carryTaskRows.length) {
-      notify.info(`Carried over ${carryTopicRows.length} topic${carryTopicRows.length!==1?"s":""} and ${carryTaskRows.length} task${carryTaskRows.length!==1?"s":""} from last week`);
-    }
   };
 
   const updateItem = (itemKey, field, value) => {
@@ -3557,6 +3565,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
         next = [...prev, { id: `wc_${itemKey}_${Date.now()}`, date: selectedDate, itemKey, assignee: "", done: false, notes: "", customLabel: "", spiritToggle: "", [field]: value }];
       }
       setWardCouncilMeeting(next);
+      wcDataRef.current = next; // sync ref immediately so doSave gets fresh data
       return next;
     });
     wcMarkDirty(`${selectedDate}|${itemKey}`);
@@ -3580,6 +3589,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
   };
   const toggleTopic = (id) => {
     updateItem(id, "done", !dateItems.find(r => r.itemKey === id)?.done);
+    setTimeout(() => doSave(), 100);
   };
 
   const removeTopic = (id) => {
@@ -3598,6 +3608,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
 
   const toggleTask = (id) => {
     updateItem(id, "done", !dateItems.find(r => r.itemKey === id)?.done);
+    setTimeout(() => doSave(), 100);
   };
 
   const removeTask = (id) => {
@@ -3709,8 +3720,9 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
           </>)}
           <button onClick={doSave} disabled={wcSaveStatus === "saving" || wcSaveStatus === "pushing" || !hasData}
             style={{ background: "rgba(255,255,255,.18)", border: "1.5px solid rgba(255,255,255,.4)", color: "#fff", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 600, cursor: wcSaveStatus === "saving" || !hasData ? "not-allowed" : "pointer", opacity: wcSaveStatus === "saving" || !hasData ? .5 : 1, display: "flex", alignItems: "center", gap: 6 }}>
-            <Save size={13}/> {wcSaveStatus === "saving" ? "Saving…" : "Save"}
+            <Save size={13}/> Save
           </button>
+          <SaveStatusDot status={wcSaveStatus}/>
         </div>
       </div>
 
@@ -3774,7 +3786,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
                   : tmpl.label;
                 return (
                   <div key={tmpl.itemKey} style={{ padding: "14px 20px", borderBottom: isLast ? "none" : `1px solid ${C.borderLight}`, display: "flex", alignItems: "flex-start", gap: 16 }}>
-                    <button onClick={() => updateItem(tmpl.itemKey, "done", !(row?.done))}
+                    <button onClick={() => { updateItem(tmpl.itemKey, "done", !(row?.done)); setTimeout(() => doSave(), 100); }}
                       style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${row?.done ? C.green25 : C.border}`, background: row?.done ? C.green25 : "transparent", cursor: "pointer", flexShrink: 0, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "center" }}>
                       {row?.done && <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                     </button>
@@ -4903,11 +4915,26 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false, onSaveSta
 
   const sacrDataRef = useRef(data);
   useEffect(() => { sacrDataRef.current = data; }, [data]);
+  const sacrBaseRef = useRef(null);
+  useEffect(() => {
+    if (sacrBaseRef.current === null && data.length > 0) {
+      sacrBaseRef.current = data;
+    }
+  }, [data]);
 
   const { markDirty: sacrMarkDirty, doSave, saveStatus: sacrSaveStatus,
           pendingCount: sacrPendingCount, applyPending: sacrApplyPending } = useMeetingSync({
     getData:  () => sacrDataRef.current,
-    saveFn:   async (data) => { if (saveFn) { if(onSaveStart) onSaveStart(); try { await saveFn(data); } finally { if(onSaveEnd) onSaveEnd(); } } },
+    saveFn:   async (data) => {
+      if(onSaveStart) onSaveStart();
+      try {
+        const { pushSacramentProgram } = await import("./sheets");
+        const dateRows = data.filter(r => r.date === activeDate);
+        const baseRows = (sacrBaseRef.current || []).filter(r => r.date === activeDate);
+        await pushSacramentProgram(dateRows, activeDate, baseRows, data);
+        sacrBaseRef.current = data;
+      } finally { if(onSaveEnd) onSaveEnd(); }
+    },
     pullFn:   pullFn || null,
     diffFn:   sacrDiff,
     onApply:  (remote) => setData(remote),
@@ -4927,7 +4954,11 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false, onSaveSta
   };
 
   const updateItem = (id, field, value) => {
-    setData(prev => prev.map(r => r.id === id ? {...r, [field]: value} : r));
+    setData(prev => {
+      const next = prev.map(r => r.id === id ? {...r, [field]: value} : r);
+      sacrDataRef.current = next; // sync ref immediately so doSave gets fresh data
+      return next;
+    });
     sacrMarkDirty(id); // marks this row as locally edited
   };
 
@@ -4985,6 +5016,7 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false, onSaveSta
               opacity:sacrSaveStatus==="saving"?.6:1,minWidth:90}}>
             {sacrSaveStatus==="saving" ? "Saving…" : <><SaveIcon/> Save</>}
           </button>
+          <SaveStatusDot status={sacrSaveStatus}/>
         </>)}
       </HeroBanner>
 
@@ -5340,91 +5372,169 @@ function SacramentItemModal({ item, onSave, onClose }) {
 }
 
 function SacramentPrintView({ program, date, onClose }) {
-  // Print respects the globalOrder that was set by dragging
   const sortedForPrint = [...program].sort((a,b) => (a.globalOrder??0) - (b.globalOrder??0));
-
-  // Dynamically collect ALL Presiding and Accompaniment rows in order —
-  // so adding a 3rd (or 4th) Presiding item automatically appears in the header.
-  const presidingItems    = sortedForPrint.filter(r => r.section === "Presiding");
+  const presidingItems     = sortedForPrint.filter(r => r.section === "Presiding");
   const accompanimentItems = sortedForPrint.filter(r => r.section === "Accompaniment");
+  const mainItems          = sortedForPrint.filter(r => r.section !== "Presiding" && r.section !== "Accompaniment");
 
-  // Everything else flows as the body of the program
-  const mainItems = sortedForPrint.filter(r => r.section !== "Presiding" && r.section !== "Accompaniment");
+  const handlePrint = () => {
+    const dateLabel = formatSundayLabel(date);
+    const wardName  = config.WARD_NAME || "Ward";
 
-  const PRINT_CSS = `
-    @media print {
-      body * { visibility: hidden; }
-      #sacrament-print, #sacrament-print * { visibility: visible; }
-      #sacrament-print { position: absolute; left: 0; top: 0; width: 100%; }
-      .no-print { display: none !important; }
-    }
-    #sacrament-print {
+    // Build the presiding/accompaniment meta rows
+    const metaRows = [
+      ...presidingItems.filter(r => r.value).map(r => `<div>${r.label}: ${r.value}</div>`),
+      ...accompanimentItems.filter(r => r.value).map(r => `<div>${r.label}: ${r.value}</div>`),
+    ].join("");
+
+    // Build the program body rows
+    const bodyRows = mainItems.map(item => `
+      <div class="sp-item">
+        <div class="sp-label">${item.label || ""}</div>
+        <div class="sp-value-col">
+          <div class="sp-value">${item.value || "<span class='sp-blank'>—</span>"}</div>
+          ${item.notes ? `<div class="sp-notes">${item.notes}</div>` : ""}
+        </div>
+      </div>
+    `).join("");
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sacrament Meeting — ${dateLabel}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
       font-family: 'Crimson Pro', Georgia, serif;
+      color: #222;
+      background: white;
+      padding: 48px 56px;
       max-width: 680px;
       margin: 0 auto;
-      padding: 32px;
-      background: white;
-      color: #222;
     }
-    .sp-header { text-align: center; margin-bottom: 24px; border-bottom: 2px solid #003057; padding-bottom: 16px; }
-    .sp-ward { font-size: 13px; font-family: sans-serif; letter-spacing: .1em; text-transform: uppercase; color: #666; margin-bottom: 6px; }
-    .sp-title { font-size: 28px; font-weight: 600; color: #003057; margin-bottom: 4px; }
-    .sp-date { font-size: 15px; color: #555; }
-    .sp-meta { font-size: 12px; font-family: sans-serif; color: #666; margin-top: 8px; line-height: 1.8; }
-    .sp-item { display: flex; gap: 16px; padding: 7px 0; align-items: baseline; border-bottom: 1px solid #F0EDE8; }
-    .sp-section-badge { font-size: 10px; font-family: sans-serif; letter-spacing:.06em; text-transform:uppercase; color: #999; min-width: 120px; }
-    .sp-label { font-size: 12px; font-family: sans-serif; color: #666; min-width: 130px; }
-    .sp-value { font-size: 15px; color: #222; flex: 1; }
-    .sp-notes { font-size: 12px; color: #888; font-style: italic; }
-    .sp-footer { margin-top: 32px; text-align: center; font-size: 11px; font-family: sans-serif; color: #aaa; border-top: 1px solid #eee; padding-top: 12px; }
-  `;
+    .sp-header {
+      text-align: center;
+      margin-bottom: 28px;
+      padding-bottom: 18px;
+      border-bottom: 2px solid #003057;
+    }
+    .sp-ward {
+      font-size: 11px;
+      font-family: sans-serif;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: #888;
+      margin-bottom: 8px;
+    }
+    .sp-title {
+      font-size: 30px;
+      font-weight: 600;
+      color: #003057;
+      margin-bottom: 4px;
+    }
+    .sp-date { font-size: 16px; color: #555; margin-bottom: 10px; }
+    .sp-meta {
+      font-size: 13px;
+      font-family: sans-serif;
+      color: #666;
+      line-height: 1.9;
+      margin-top: 10px;
+    }
+    .sp-item {
+      display: flex;
+      gap: 20px;
+      padding: 9px 0;
+      border-bottom: 1px solid #f0ede8;
+      align-items: baseline;
+    }
+    .sp-label {
+      font-size: 12px;
+      font-family: sans-serif;
+      color: #888;
+      min-width: 140px;
+      flex-shrink: 0;
+    }
+    .sp-value-col { flex: 1; }
+    .sp-value { font-size: 16px; color: #222; }
+    .sp-blank { color: #ccc; font-style: italic; }
+    .sp-notes { font-size: 12px; color: #999; font-style: italic; margin-top: 2px; }
+    .sp-footer {
+      margin-top: 36px;
+      text-align: center;
+      font-size: 11px;
+      font-family: sans-serif;
+      color: #bbb;
+      border-top: 1px solid #eee;
+      padding-top: 14px;
+    }
+    @media print {
+      body { padding: 24px 32px; }
+      @page { margin: 0.5in; }
+    }
+  </style>
+</head>
+<body>
+  <div class="sp-header">
+    <div class="sp-ward">${wardName}</div>
+    <div class="sp-title">Sacrament Meeting</div>
+    <div class="sp-date">${dateLabel}</div>
+    ${metaRows ? `<div class="sp-meta">${metaRows}</div>` : ""}
+  </div>
+  ${bodyRows}
+  <div class="sp-footer">The Church of Jesus Christ of Latter-day Saints</div>
+  <script>
+    window.onload = function() { window.print(); };
+  </script>
+</body>
+</html>`;
+
+    const popup = window.open("", "_blank", "width=780,height=900,menubar=yes,toolbar=yes");
+    if (!popup) {
+      notify.error("Pop-up blocked. Allow pop-ups for this site and try again.");
+      return;
+    }
+    popup.document.write(html);
+    popup.document.close();
+  };
 
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",zIndex:200,overflow:"auto",padding:"24px"}}>
-      <div style={{maxWidth:740,margin:"0 auto"}}>
-        <div className="no-print" style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <span style={{color:"#fff",fontFamily:"'Helvetica Neue',Arial,sans-serif",fontSize:13}}>Print Preview — {formatSundayLabel(date)}</span>
-          <div style={{display:"flex",gap:8}}>
-            <button className="btn-primary" onClick={()=>window.print()} style={{fontSize:13}}><PrinterIcon/> Print</button>
-            <button className="btn-secondary" onClick={onClose} style={{fontSize:13,color:"#fff",border:"1.5px solid rgba(255,255,255,.3)",background:"rgba(255,255,255,.1)"}}>Close</button>
-          </div>
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.55)",zIndex:200,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{background:"#fff",borderRadius:14,padding:"32px 40px",maxWidth:480,width:"100%",
+        boxShadow:"0 12px 48px rgba(0,0,0,.25)",textAlign:"center"}}>
+        <div style={{fontFamily:"Georgia,serif",fontSize:20,fontWeight:600,
+          color:C.navy,marginBottom:8}}>Print Sacrament Program</div>
+        <div style={{fontSize:13,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+          marginBottom:24,lineHeight:1.6}}>
+          {formatSundayLabel(date)}<br/>
+          <span style={{fontSize:12}}>{sortedForPrint.length} items · {presidingItems.length + accompanimentItems.length} header rows</span>
         </div>
-
-        <style>{PRINT_CSS}</style>
-        <div id="sacrament-print" style={{background:"white",borderRadius:8,padding:"40px 48px",boxShadow:"0 8px 40px rgba(0,0,0,.3)"}}>
-          <div className="sp-header">
-            <div className="sp-ward">{config.WARD_NAME}</div>
-            <div className="sp-title">Sacrament Meeting</div>
-            <div className="sp-date">{formatSundayLabel(date)}</div>
-            <div className="sp-meta">
-              {presidingItems.map(r => r.value && (
-                <div key={r.id}>{r.label}: {r.value}</div>
-              ))}
-              {accompanimentItems.map(r => r.value && (
-                <div key={r.id}>{r.label}: {r.value}</div>
-              ))}
-            </div>
-          </div>
-
-          {mainItems.map(item => {
-            const meta = SECTION_META[item.section]||{};
-            return (
-              <div key={item.id} className="sp-item">
-                <div className="sp-label">{item.label}</div>
-                <div style={{flex:1}}>
-                  <div className="sp-value">{item.value||<span style={{color:"#ccc",fontStyle:"italic"}}>—</span>}</div>
-                  {item.notes&&<div className="sp-notes">{item.notes}</div>}
-                </div>
-              </div>
-            );
-          })}
-
-          <div className="sp-footer">The Church of Jesus Christ of Latter-day Saints</div>
+        <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+          <button onClick={onClose}
+            style={{padding:"9px 20px",borderRadius:8,border:`1.5px solid ${C.border}`,
+              background:"transparent",color:C.textPrimary,fontSize:13,cursor:"pointer",
+              fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>
+            Cancel
+          </button>
+          <button onClick={handlePrint}
+            style={{padding:"9px 20px",borderRadius:8,border:"none",
+              background:C.blue35,color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer",
+              fontFamily:"'Helvetica Neue',Arial,sans-serif",display:"flex",
+              alignItems:"center",gap:6}}>
+            <PrinterIcon/> Open Print Preview
+          </button>
+        </div>
+        <div style={{fontSize:11,color:C.textLight,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+          marginTop:14}}>
+          Opens in a new window — use your browser's print dialog
         </div>
       </div>
     </div>
   );
 }
+
 
 // ─── SVG Icons ────────────────────────────────────────────────────────────────
 function SectionIcon({section,size=13,color}) {
