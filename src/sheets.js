@@ -408,6 +408,40 @@ export async function pushCalendar(data) {
   await clearAndWrite(WCID(), "Calendar!A:E", values);
 }
 
+
+// ── Narrative Templates ───────────────────────────────────────────────────────
+
+const DEFAULT_NARRATIVE_TEMPLATES = {
+  intro:         "Welcome brothers and sisters. We are glad you could join us today for sacrament meeting.",
+  organist_intro:"We'd like to thank our organist {organist} and music leader {chorister} for their help with the music today.",
+  releasing:     "The following individuals have been released and we propose they be given a vote of thanks for their excellent service.\n{names}\nAll who wish to show their appreciation, please manifest it by the uplifted hand.",
+  calling:       "The following have accepted a call to serve in the ward. (We ask that you please stand as your name is called.)\n{names_callings}\nWe propose that they be sustained. Those in favor may manifest it by the uplifted hand. Those opposed, if any, may manifest it.",
+  new_member:    "Would the following new members in our ward please stand:\n{names}\nWe propose they be welcomed into the [name of ward] Ward, [name of stake] Stake, of The Church of Jesus Christ of Latter-day Saints. Those in favor may manifest it by the uplifted hand.",
+  ordination:    "We propose the following receive the Aaronic Priesthood and be ordained.\n{names_offices}\nThose in favor may manifest it by the uplifted hand. (Pause for vote) Those opposed, if any, may manifest it.",
+};
+
+export async function pullNarrativeTemplates() {
+  try {
+    const r = await bishopricReq("NarrativeTemplates!A:B");
+    if (!r.values || r.values.length < 2) return { templates: { ...DEFAULT_NARRATIVE_TEMPLATES } };
+    const templates = { ...DEFAULT_NARRATIVE_TEMPLATES };
+    r.values.slice(1).forEach(row => {
+      if (row[0] && row[1] !== undefined) templates[row[0]] = row[1];
+    });
+    return { templates };
+  } catch(_) {
+    return { templates: { ...DEFAULT_NARRATIVE_TEMPLATES } };
+  }
+}
+
+export async function pushNarrativeTemplates(templates) {
+  const values = [
+    ["Key", "Template"],
+    ...Object.entries(templates).map(([k, v]) => [k, v]),
+  ];
+  await clearAndWrite(SID(), "NarrativeTemplates!A:B", values);
+}
+
 // ── Roster ────────────────────────────────────────────────────────────────────
 
 export async function pullRoster() {

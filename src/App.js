@@ -666,6 +666,7 @@ function MainApp({ user, token, onSignOut }) {
   const [connMsg,setConnMsg]       = useState("");
   const [showSettings,setShowSettings] = useState(false);
   const [roster,setRoster]             = useState(ROSTER_POSITIONS.map(p=>({role:p.role,name:""})));
+  const [narrativeTemplates, setNarrativeTemplates] = useState({});
 
   // Compute role early so doPull can branch before isAdmin is declared below
   const userEmail = user?.email?.toLowerCase()||"";
@@ -737,6 +738,12 @@ function MainApp({ user, token, onSignOut }) {
           if(!bmDirty.current) setBishopricMeeting(d.bishopricMeeting||[]);
           if(d.members) setMembers(d.members);
           if(d.roster) setRoster(d.roster);
+          // Pull narrative templates (non-blocking)
+          try {
+            const { pullNarrativeTemplates } = await import("./sheets");
+            const nt = await pullNarrativeTemplates();
+            if(nt.templates) setNarrativeTemplates(nt.templates);
+          } catch(_) {}
           // Sacrament (non-blocking)
           try {
             const sp = await pullSacrament();
@@ -1143,14 +1150,14 @@ function MainApp({ user, token, onSignOut }) {
         {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isMobile={isMobile} onSaveStart={()=>{bmDirty.current=true;}} onSaveEnd={()=>{bmDirty.current=false;}}/>}
         {isAdmin&&tab==="notes"       &&<NotesTab    data={members}  setData={setMembers}/>}
         {isAdmin&&tab==="alerts"      &&<AlertsTab appointments={appointments} callings={callings} releasings={releasings} isMobile={isMobile}/>}
-        {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} isMobile={isMobile} onSaveStart={()=>{sacrDirty.current=true;}} onSaveEnd={()=>{sacrDirty.current=false;}}/>}
+        {isAdmin&&tab==="sacrament"&&<SacramentTab data={sacramentProgram} setData={setSacrament} saveFn={doSacramentSave} pullFn={doSacramentPull} isMobile={isMobile} onSaveStart={()=>{sacrDirty.current=true;}} onSaveEnd={()=>{sacrDirty.current=false;}} narrativeTemplates={narrativeTemplates} callings={callings} releasings={releasings}/>}
         {(isAdmin||isWardCouncil)&&tab==="calendar"&&<CalendarTab calendar={calendar} setCalendar={setCalendar} token={token} isMobile={isMobile} onSaveStart={()=>{calendarDirty.current=true;}} onSaveEnd={()=>{calendarDirty.current=false;}}/>}
         {(isAdmin||isWardCouncil)&&tab==="ward-council"&&<WardCouncilTab wardCouncilMeeting={wardCouncilMeeting} setWardCouncilMeeting={setWardCouncilMeeting} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isAdmin={isAdmin} isMobile={isMobile} onSaveStart={()=>{wcDirty.current=true;}} onSaveEnd={()=>{wcDirty.current=false;}}/>}
         {(isAdmin||isWardCouncil)&&tab==="links"&&<LinksTab bishopricLinks={isAdmin?bishopricLinks:null} setBishopricLinks={setBishopricLinks} wcLinks={wcLinks} setWcLinks={setWcLinks} token={token} isAdmin={isAdmin}/>}
         {!isAdmin&&!isWardCouncil&&<UnauthorizedView/>}
       </main>
 
-      {showSettings&&<SettingsModal token={token} onTestConn={doTestConnection} connStatus={connStatus} connMsg={connMsg} roster={roster} setRoster={setRoster} onClose={()=>setShowSettings(false)}/>}
+      {showSettings&&<SettingsModal token={token} onTestConn={doTestConnection} connStatus={connStatus} connMsg={connMsg} roster={roster} setRoster={setRoster} narrativeTemplates={narrativeTemplates} setNarrativeTemplates={setNarrativeTemplates} onClose={()=>setShowSettings(false)}/>}
 
       {/* ── Bottom Tab Bar (mobile only) ── */}
       {isMobile && (
@@ -4415,7 +4422,7 @@ function LinkFormModal({ link, source, isAdmin, saving, onSave, onClose }) {
 }
 
 // ─── Settings Modal ───────────────────────────────────────────────────────────
-function SettingsModal({token,onTestConn,connStatus,connMsg,roster,setRoster,onClose}){
+function SettingsModal({token,onTestConn,connStatus,connMsg,roster,setRoster,narrativeTemplates,setNarrativeTemplates,onClose}){
   const connColors={ok:C.green25,error:C.red15,warn:C.gold20,testing:C.blue25,unknown:C.textLight};
   const connLabels={ok:"Connected",error:"Error",warn:"Warning",testing:"Testing…",unknown:"Not tested"};
   return(
@@ -4525,10 +4532,84 @@ function SettingsModal({token,onTestConn,connStatus,connMsg,roster,setRoster,onC
           <div style={{fontSize:11,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginBottom:12,lineHeight:1.5}}>Names entered here appear throughout the app in assignee dropdowns and owner fields. Leave blank to show role titles only.</div>
           <RosterEditor roster={roster} setRoster={setRoster} token={token}/>
         </section>
+
+        {/* ── Narrative Templates ── */}
+        <section>
+          <div style={{fontSize:12,fontWeight:700,letterSpacing:".08em",textTransform:"uppercase",color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginBottom:6,paddingBottom:8,borderBottom:`1px solid ${C.borderLight}`}}>Narrative Templates</div>
+          <div style={{fontSize:11,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginBottom:12,lineHeight:1.5}}>
+            Used when printing the Narrative Version of the sacrament program. Supports variables: {"{organist}"}, {"{chorister}"}, {"{names}"}, {"{names_callings}"}, {"{names_offices}"}.
+          </div>
+          <NarrativeTemplateEditor templates={narrativeTemplates} setTemplates={setNarrativeTemplates}/>
+        </section>
       </div>
     </ModalShell>
   );
 }
+
+
+// ── Narrative Template Editor ─────────────────────────────────────────────────
+const NARRATIVE_TEMPLATE_KEYS = [
+  { key: "intro",          label: "Opening Welcome" },
+  { key: "organist_intro", label: "Organist & Chorister Thanks" },
+  { key: "releasing",      label: "Releasing Narrative" },
+  { key: "calling",        label: "Calling Narrative" },
+  { key: "new_member",     label: "New Member Narrative" },
+  { key: "ordination",     label: "Ordination Narrative" },
+];
+
+function NarrativeTemplateEditor({ templates, setTemplates }) {
+  const [local, setLocal]   = useState({});
+  const [saving, setSaving] = useState(false);
+
+  // Initialise local copy once templates arrive
+  useEffect(() => {
+    if (Object.keys(templates).length > 0 && Object.keys(local).length === 0) {
+      setLocal({ ...templates });
+    }
+  }, [templates]); // eslint-disable-line
+
+  const update = (key, val) => setLocal(prev => ({ ...prev, [key]: val }));
+
+  const doSave = async () => {
+    setSaving(true);
+    try {
+      const { pushNarrativeTemplates } = await import("./sheets");
+      await pushNarrativeTemplates(local);
+      setTemplates(local);
+      notify.success("Narrative templates saved");
+    } catch(e) {
+      notify.error("Save failed: " + e.message);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        {NARRATIVE_TEMPLATE_KEYS.map(({ key, label }) => (
+          <div key={key} style={{padding:"8px 10px",background:C.surfaceWarm,borderRadius:7}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.textMuted,
+              fontFamily:"'Helvetica Neue',Arial,sans-serif",
+              letterSpacing:".05em",marginBottom:5}}>{label}</div>
+            <textarea
+              rows={3}
+              value={local[key] ?? templates[key] ?? ""}
+              onChange={e => update(key, e.target.value)}
+              style={{width:"100%",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                color:C.textPrimary,border:`1px solid ${C.borderLight}`,borderRadius:5,
+                padding:"6px 8px",resize:"vertical",boxSizing:"border-box",background:"#fff"}}
+            />
+          </div>
+        ))}
+      </div>
+      <button onClick={doSave} disabled={saving} className="btn-primary"
+        style={{marginTop:10,fontSize:12,padding:"7px 18px",
+          display:"flex",alignItems:"center",gap:6}}>
+        <Save size={12}/> {saving ? "Saving…" : "Save Templates"}
+      </button>
+    </div>
+  );
+}
+
 
 function RosterEditor({roster,setRoster,token}) {
   // Build a complete local copy keyed by all 11 positions.
@@ -4894,7 +4975,7 @@ ${preview.length} record${preview.length===1?"":"s"} · ${source}`}
 }
 
 
-function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false, onSaveStart, onSaveEnd }) {
+function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false, onSaveStart, onSaveEnd, narrativeTemplates={}, callings=[], releasings=[] }) {
   const allDates = [...new Set(data.map(r=>r.date).filter(Boolean))].sort().reverse();
   // Always default to the upcoming Sunday (matches Bishopric tab behaviour)
   const [activeDate, setActiveDate] = useState(nextSunday);
@@ -5113,10 +5194,145 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false, onSaveSta
           onClose={() => setEditingItem(null)}/>
       )}
 
-      {showPrint && <SacramentPrintView program={sortedProgram} date={activeDate} onClose={()=>setShowPrint(false)}/>}
+      {showPrint && <SacramentPrintView program={sortedProgram} date={activeDate} onClose={()=>setShowPrint(false)} narrativeTemplates={narrativeTemplates} callings={callings} releasings={releasings}/>}
     </div>
   );
 }
+
+
+// ── Announcement type dropdown + structured inputs ────────────────────────────
+const ANNOUNCEMENT_TYPES = ["Announcement","Calling","Releasing","New Member","Ordination","Custom"];
+
+function parseAnnouncementValue(value) {
+  // Try to parse as JSON array; fall back to plain string
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed;
+  } catch(_) {}
+  return []; // plain string = treat as simple announcement, not structured
+}
+
+function stringifyAnnouncementValue(rows) {
+  return JSON.stringify(rows);
+}
+
+function AnnouncementEditor({ item, onUpdate }) {
+  const type = item.label || "Announcement";
+  const isStructured = ["Calling","Releasing","New Member","Ordination"].includes(type);
+  const rows = isStructured ? parseAnnouncementValue(item.value) : [];
+
+  const setRows = (newRows) => onUpdate(item.id, "value", stringifyAnnouncementValue(newRows));
+  const addRow  = () => {
+    if (type === "Calling" || type === "Releasing") setRows([...rows, {name:"",calling:""}]);
+    else if (type === "New Member")                  setRows([...rows, {name:""}]);
+    else if (type === "Ordination")                  setRows([...rows, {name:"",office:""}]);
+  };
+  const updateRow = (i, field, val) => {
+    const next = rows.map((r, ri) => ri === i ? {...r, [field]: val} : r);
+    setRows(next);
+  };
+  const removeRow = (i) => setRows(rows.filter((_, ri) => ri !== i));
+
+  const inputStyle = {
+    flex:1, padding:"4px 8px", fontSize:12,
+    fontFamily:"'Helvetica Neue',Arial,sans-serif",
+    border:`1px solid ${C.borderLight}`, borderRadius:5,
+    background:"#fff", minWidth:0,
+  };
+  const labelStyle = {
+    fontSize:10, fontWeight:700, color:C.textMuted,
+    fontFamily:"'Helvetica Neue',Arial,sans-serif",
+    textTransform:"uppercase", letterSpacing:".05em",
+    marginBottom:3, display:"block",
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+      {/* Type selector */}
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+        <select value={type}
+          onChange={e => {
+            const newType = e.target.value;
+            onUpdate(item.id, "label", newType);
+            // Reset value when type changes
+            if(["Calling","Releasing","New Member","Ordination"].includes(newType)) {
+              onUpdate(item.id, "value", stringifyAnnouncementValue([]));
+            } else {
+              onUpdate(item.id, "value", "");
+            }
+          }}
+          style={{padding:"4px 8px",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+            border:`1px solid ${C.borderLight}`,borderRadius:5,background:"#fff",fontWeight:600}}>
+          {ANNOUNCEMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        {/* Summary badge */}
+        {isStructured && rows.length > 0 && (
+          <span style={{fontSize:11,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>
+            {rows.length} {rows.length === 1 ? "person" : "people"}
+          </span>
+        )}
+      </div>
+
+      {/* Custom label input */}
+      {type === "Custom" && (
+        <div>
+          <label style={labelStyle}>Label</label>
+          <input value={item.notes||""} placeholder="Custom label…"
+            onChange={e => onUpdate(item.id,"notes",e.target.value)}
+            style={{...inputStyle,width:"100%",boxSizing:"border-box"}}/>
+        </div>
+      )}
+
+      {/* Simple announcement text */}
+      {type === "Announcement" && (
+        <div>
+          <label style={labelStyle}>Announcement text</label>
+          <textarea value={item.value||""} rows={2}
+            onChange={e => onUpdate(item.id,"value",e.target.value)}
+            placeholder="Enter announcement…"
+            style={{...inputStyle,width:"100%",boxSizing:"border-box",resize:"vertical",padding:"6px 8px"}}/>
+        </div>
+      )}
+
+      {/* Structured rows */}
+      {isStructured && (
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          {rows.map((row, i) => (
+            <div key={i} style={{display:"flex",gap:6,alignItems:"center"}}>
+              <input value={row.name||""} placeholder="Name…"
+                onChange={e => updateRow(i,"name",e.target.value)}
+                style={inputStyle}/>
+              {(type==="Calling"||type==="Releasing") && (
+                <input value={row.calling||""} placeholder="Calling…"
+                  onChange={e => updateRow(i,"calling",e.target.value)}
+                  style={inputStyle}/>
+              )}
+              {type==="Ordination" && (
+                <input value={row.office||""} placeholder="Office…"
+                  onChange={e => updateRow(i,"office",e.target.value)}
+                  style={{...inputStyle,flex:"0 0 100px"}}/>
+              )}
+              <button onClick={()=>removeRow(i)}
+                style={{background:"none",border:"none",cursor:"pointer",
+                  color:C.textLight,flexShrink:0,padding:"2px 4px"}}>
+                <X size={12}/>
+              </button>
+            </div>
+          ))}
+          <button onClick={addRow}
+            style={{alignSelf:"flex-start",padding:"4px 10px",fontSize:11,borderRadius:5,
+              border:`1px solid ${C.blue25}`,background:"transparent",color:C.blue25,
+              cursor:"pointer",fontFamily:"'Helvetica Neue',Arial,sans-serif",
+              display:"flex",alignItems:"center",gap:4}}>
+            <Plus size={10}/> Add person
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=false }) {
   const dragItem = useRef(null);
@@ -5262,6 +5478,11 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
                       <X size={12}/>
                     </button>
                   </div>
+                  {item.section === "Announcement" ? (
+                    <div style={{marginBottom:6}}>
+                      <AnnouncementEditor item={item} onUpdate={onUpdate}/>
+                    </div>
+                  ) : (<>
                   <input value={item.label} onChange={e=>onUpdate(item.id,"label",e.target.value)} placeholder="Label"
                     style={{width:"100%",fontSize:12,fontWeight:600,color:meta.color,fontFamily:"'Helvetica Neue',Arial,sans-serif",
                       border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"6px 10px",marginBottom:6,background:C.surfaceWarm,boxSizing:"border-box"}}/>
@@ -5271,6 +5492,7 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
                   <input value={item.notes} onChange={e=>onUpdate(item.id,"notes",e.target.value)} placeholder="Notes…"
                     style={{width:"100%",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted,
                       border:`1px solid ${C.borderLight}`,borderRadius:6,padding:"6px 10px",background:C.surfaceWarm,boxSizing:"border-box"}}/>
+                  </>)}
                 </>
               ) : (
                 /* Desktop: grid row with drag handle + up/down arrows */
@@ -5308,6 +5530,11 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
                       {item.section}
                     </span>
                   </div>
+                  {item.section === "Announcement" ? (
+                    <div style={{gridColumn:"span 3",padding:"2px 4px"}}>
+                      <AnnouncementEditor item={item} onUpdate={onUpdate}/>
+                    </div>
+                  ) : (<>
                   <input value={item.label} onChange={e=>onUpdate(item.id,"label",e.target.value)} placeholder="Label"
                     style={{border:"none",background:"transparent",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
                       fontWeight:600,color:meta.color,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
@@ -5323,6 +5550,7 @@ function DraggableProgramList({ items, onReorder, onUpdate, onDelete, isMobile=f
                       color:C.textMuted,padding:"2px 4px",borderRadius:4,outline:"none",width:"100%"}}
                     onFocus={e=>e.target.style.background=C.surfaceWarm}
                     onBlur={e=>e.target.style.background="transparent"}/>
+                  </>)}
                   <button onClick={()=>onDelete(item.id)} style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"4px",borderRadius:4,display:"flex",alignItems:"center"}}
                     onMouseEnter={e=>e.currentTarget.style.color=C.red15}
                     onMouseLeave={e=>e.currentTarget.style.color=C.textLight}>
@@ -5371,111 +5599,241 @@ function SacramentItemModal({ item, onSave, onClose }) {
   );
 }
 
-function SacramentPrintView({ program, date, onClose }) {
-  const sortedForPrint = [...program].sort((a,b) => (a.globalOrder??0) - (b.globalOrder??0));
+function SacramentPrintView({ program, date, onClose, narrativeTemplates={}, callings=[], releasings=[] }) {
+  const sortedForPrint     = [...program].sort((a,b) => (a.globalOrder??0) - (b.globalOrder??0));
   const presidingItems     = sortedForPrint.filter(r => r.section === "Presiding");
   const accompanimentItems = sortedForPrint.filter(r => r.section === "Accompaniment");
   const mainItems          = sortedForPrint.filter(r => r.section !== "Presiding" && r.section !== "Accompaniment");
 
-  const handlePrint = () => {
+  const organist  = accompanimentItems.find(r => r.label === "Organist")?.value  || "";
+  const chorister = accompanimentItems.find(r => r.label === "Chorister")?.value || "";
+
+  // ── Standard print (unchanged) ──
+  const handleStandardPrint = () => {
     const dateLabel = formatSundayLabel(date);
     const wardName  = config.WARD_NAME || "Ward";
-
-    // Build the presiding/accompaniment meta rows
-    const metaRows = [
+    const metaRows  = [
       ...presidingItems.filter(r => r.value).map(r => `<div>${r.label}: ${r.value}</div>`),
       ...accompanimentItems.filter(r => r.value).map(r => `<div>${r.label}: ${r.value}</div>`),
     ].join("");
 
-    // Build the program body rows
-    const bodyRows = mainItems.map(item => `
-      <div class="sp-item">
-        <div class="sp-label">${item.label || ""}</div>
-        <div class="sp-value-col">
-          <div class="sp-value">${item.value || "<span class='sp-blank'>—</span>"}</div>
-          ${item.notes ? `<div class="sp-notes">${item.notes}</div>` : ""}
+    // Expand Announcement items for standard print
+    const expandAnnouncementItem = (item) => {
+      const type = item.label || "Announcement";
+      const structured = ["Calling","Releasing","New Member","Ordination"].includes(type);
+      if (!structured) {
+        return `<div class="sp-item">
+          <div class="sp-label">${item.label||"Announcement"}</div>
+          <div class="sp-value-col"><div class="sp-value">${item.value||"—"}</div></div>
+        </div>`;
+      }
+      let rows = [];
+      try { rows = JSON.parse(item.value||"[]"); } catch(_) {}
+      const names = rows.map(r => {
+        if (type==="Calling"||type==="Releasing") return `${r.name}${r.calling?" — "+r.calling:""}`;
+        if (type==="Ordination") return `${r.name}${r.office?" — "+r.office:""}`;
+        return r.name;
+      }).join(", ") || "—";
+      return `<div class="sp-item">
+        <div class="sp-label">${type}</div>
+        <div class="sp-value-col"><div class="sp-value">${names}</div></div>
+      </div>`;
+    };
+
+    const bodyRows = mainItems.map(item =>
+      item.section === "Announcement"
+        ? expandAnnouncementItem(item)
+        : `<div class="sp-item">
+            <div class="sp-label">${item.label||""}</div>
+            <div class="sp-value-col">
+              <div class="sp-value">${item.value||"<span class='sp-blank'>—</span>"}</div>
+              ${item.notes ? `<div class="sp-notes">${item.notes}</div>` : ""}
+            </div>
+          </div>`
+    ).join("");
+
+    const html = buildPrintHtml(wardName, dateLabel, metaRows, bodyRows);
+    openPrintWindow(html);
+  };
+
+  // ── Narrative print ──
+  const handleNarrativePrint = () => {
+    const dateLabel = formatSundayLabel(date);
+    const wardName  = config.WARD_NAME || "Ward";
+
+    const sub = (template, vars) => {
+      if (!template) return "";
+      let t = template;
+      Object.entries(vars).forEach(([k,v]) => { t = t.replace(new RegExp("{"+k+"}","g"), v); });
+      return t;
+    };
+
+    const T = narrativeTemplates;
+
+    // Intro block
+    const introText = T.intro || "";
+    const organistText = (organist||chorister)
+      ? sub(T.organist_intro||"", {organist: organist||"—", chorister: chorister||"—"})
+      : "";
+
+    // Build narrative blocks for each item in order
+    const narrativeBlocks = mainItems.map(item => {
+      if (item.section !== "Announcement") {
+        // Regular item — standard display
+        const val = item.value || "—";
+        return `<div class="sp-item">
+          <div class="sp-label">${item.label||""}</div>
+          <div class="sp-value-col">
+            <div class="sp-value">${val}</div>
+            ${item.notes?`<div class="sp-notes">${item.notes}</div>`:""}
+          </div>
+        </div>`;
+      }
+      // Announcement item — expand into narrative
+      const type = item.label || "Announcement";
+      let rows = [];
+      try { rows = JSON.parse(item.value||"[]"); } catch(_) {}
+
+      // All announcement types: show label on left, content on right — consistent with standard print
+      if (type === "Announcement") {
+        return `<div class="sp-item">
+          <div class="sp-label">Announcement</div>
+          <div class="sp-value-col"><div class="sp-value narr-text" contenteditable="true">${item.value||""}</div></div>
+        </div>`;
+      }
+      if (type === "Custom") {
+        return `<div class="sp-item">
+          <div class="sp-label">${item.notes||"Announcement"}</div>
+          <div class="sp-value-col"><div class="sp-value">${item.value||"—"}</div></div>
+        </div>`;
+      }
+      if (type === "Calling") {
+        const namesCal = rows.map(r=>`${r.name}${r.calling?" — "+r.calling:""}`).join("\n") || "—";
+        return `<div class="sp-item narr-block-row">
+          <div class="sp-label">Sustaining</div>
+          <div class="sp-value-col"><p class="narr-text narr-editable" contenteditable="true">${sub(T.calling||"",{names_callings:namesCal})}</p></div>
+        </div>`;
+      }
+      if (type === "Releasing") {
+        const names = rows.map(r=>r.name).join("\n") || "—";
+        return `<div class="sp-item narr-block-row">
+          <div class="sp-label">Releasing</div>
+          <div class="sp-value-col"><p class="narr-text narr-editable" contenteditable="true">${sub(T.releasing||"",{names})}</p></div>
+        </div>`;
+      }
+      if (type === "New Member") {
+        const names = rows.map(r=>r.name).join("\n") || "—";
+        return `<div class="sp-item narr-block-row">
+          <div class="sp-label">New Member</div>
+          <div class="sp-value-col"><p class="narr-text narr-editable" contenteditable="true">${sub(T.new_member||"",{names})}</p></div>
+        </div>`;
+      }
+      if (type === "Ordination") {
+        const namesOff = rows.map(r=>`${r.name}${r.office?" — "+r.office:""}`).join("\n") || "—";
+        return `<div class="sp-item narr-block-row">
+          <div class="sp-label">Ordination</div>
+          <div class="sp-value-col"><p class="narr-text narr-editable" contenteditable="true">${sub(T.ordination||"",{names_offices:namesOff})}</p></div>
+        </div>`;
+      }
+      return "";
+    }).join("");
+
+    const metaRows = [
+      ...presidingItems.filter(r=>r.value).map(r=>`<div>${r.label}: ${r.value}</div>`),
+    ].join("");
+
+    const html = buildNarrativePrintHtml(wardName, dateLabel, metaRows, introText, organistText, narrativeBlocks);
+    openPrintWindow(html);
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.55)",zIndex:200,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{background:"#fff",borderRadius:14,padding:"32px 40px",maxWidth:460,width:"100%",
+        boxShadow:"0 12px 48px rgba(0,0,0,.25)",textAlign:"center"}}>
+        <div style={{fontFamily:"Georgia,serif",fontSize:20,fontWeight:600,color:C.navy,marginBottom:6}}>
+          Print Sacrament Program
+        </div>
+        <div style={{fontSize:13,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+          marginBottom:24,lineHeight:1.6}}>
+          {formatSundayLabel(date)}<br/>
+          <span style={{fontSize:12}}>{sortedForPrint.length} items</span>
+        </div>
+
+        <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:24}}>
+          <button onClick={handleStandardPrint}
+            style={{padding:"11px 20px",borderRadius:8,border:"none",background:C.blue35,
+              color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer",
+              fontFamily:"'Helvetica Neue',Arial,sans-serif",display:"flex",
+              alignItems:"center",justifyContent:"center",gap:6}}>
+            <PrinterIcon/> Standard Program
+          </button>
+          <button onClick={handleNarrativePrint}
+            style={{padding:"11px 20px",borderRadius:8,
+              border:`1.5px solid ${C.blue35}`,background:"transparent",
+              color:C.blue35,fontSize:13,fontWeight:600,cursor:"pointer",
+              fontFamily:"'Helvetica Neue',Arial,sans-serif",display:"flex",
+              alignItems:"center",justifyContent:"center",gap:6}}>
+            <PrinterIcon/> Narrative Version
+          </button>
+        </div>
+
+        <button onClick={onClose}
+          style={{padding:"8px 20px",borderRadius:8,border:`1.5px solid ${C.border}`,
+            background:"transparent",color:C.textMuted,fontSize:13,cursor:"pointer",
+            fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>
+          Cancel
+        </button>
+        <div style={{fontSize:11,color:C.textLight,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginTop:12}}>
+          Opens in a new window — edit narrative text before printing
         </div>
       </div>
-    `).join("");
+    </div>
+  );
+}
 
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
+function openPrintWindow(html) {
+  const popup = window.open("","_blank","width=780,height=900,menubar=yes,toolbar=yes");
+  if (!popup) { notify.error("Pop-up blocked. Allow pop-ups for this site and try again."); return; }
+  popup.document.write(html);
+  popup.document.close();
+}
+
+const PRINT_SHARED_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Crimson Pro', Georgia, serif; color: #222; background: white;
+    padding: 48px 56px; max-width: 680px; margin: 0 auto; }
+  .sp-header { text-align: center; margin-bottom: 28px; padding-bottom: 18px; border-bottom: 2px solid #003057; }
+  .sp-ward { font-size: 11px; font-family: sans-serif; letter-spacing: .12em; text-transform: uppercase; color: #888; margin-bottom: 8px; }
+  .sp-title { font-size: 30px; font-weight: 600; color: #003057; margin-bottom: 4px; }
+  .sp-date { font-size: 16px; color: #555; margin-bottom: 10px; }
+  .sp-meta { font-size: 13px; font-family: sans-serif; color: #666; line-height: 1.9; margin-top: 10px; }
+  .sp-item { display: flex; gap: 20px; padding: 9px 0; border-bottom: 1px solid #f0ede8; align-items: baseline; }
+  .sp-label { font-size: 12px; font-family: sans-serif; color: #888; min-width: 140px; flex-shrink: 0; }
+  .sp-value-col { flex: 1; }
+  .sp-value { font-size: 16px; color: #222; }
+  .sp-blank { color: #ccc; font-style: italic; }
+  .sp-notes { font-size: 12px; color: #999; font-style: italic; margin-top: 2px; }
+  .sp-footer { margin-top: 36px; text-align: center; font-size: 11px; font-family: sans-serif; color: #bbb;
+    border-top: 1px solid #eee; padding-top: 14px; }
+  .btn-bar { position: fixed; top: 16px; right: 16px; z-index: 999; display: flex; gap: 10px; }
+  .btn-bar button { padding: 10px 20px; border: none; border-radius: 8px; font-size: 15px;
+    font-family: sans-serif; font-weight: 600; cursor: pointer; }
+  .btn-print { background: #003057; color: #fff; }
+  .btn-close { background: #f0f0f0; color: #333; border: 1px solid #ccc !important; }
+  @media print { .btn-bar { display: none !important; } @page { margin: 0.5in; } body { padding: 24px 32px; } }
+`;
+
+function buildPrintHtml(wardName, dateLabel, metaRows, bodyRows) {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   <title>Sacrament Meeting — ${dateLabel}</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&display=swap');
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Crimson Pro', Georgia, serif;
-      color: #222;
-      background: white;
-      padding: 48px 56px;
-      max-width: 680px;
-      margin: 0 auto;
-    }
-    .sp-header {
-      text-align: center;
-      margin-bottom: 28px;
-      padding-bottom: 18px;
-      border-bottom: 2px solid #003057;
-    }
-    .sp-ward {
-      font-size: 11px;
-      font-family: sans-serif;
-      letter-spacing: .12em;
-      text-transform: uppercase;
-      color: #888;
-      margin-bottom: 8px;
-    }
-    .sp-title {
-      font-size: 30px;
-      font-weight: 600;
-      color: #003057;
-      margin-bottom: 4px;
-    }
-    .sp-date { font-size: 16px; color: #555; margin-bottom: 10px; }
-    .sp-meta {
-      font-size: 13px;
-      font-family: sans-serif;
-      color: #666;
-      line-height: 1.9;
-      margin-top: 10px;
-    }
-    .sp-item {
-      display: flex;
-      gap: 20px;
-      padding: 9px 0;
-      border-bottom: 1px solid #f0ede8;
-      align-items: baseline;
-    }
-    .sp-label {
-      font-size: 12px;
-      font-family: sans-serif;
-      color: #888;
-      min-width: 140px;
-      flex-shrink: 0;
-    }
-    .sp-value-col { flex: 1; }
-    .sp-value { font-size: 16px; color: #222; }
-    .sp-blank { color: #ccc; font-style: italic; }
-    .sp-notes { font-size: 12px; color: #999; font-style: italic; margin-top: 2px; }
-    .sp-footer {
-      margin-top: 36px;
-      text-align: center;
-      font-size: 11px;
-      font-family: sans-serif;
-      color: #bbb;
-      border-top: 1px solid #eee;
-      padding-top: 14px;
-    }
-    @media print {
-      body { padding: 24px 32px; }
-      @page { margin: 0.5in; }
-    }
-  </style>
-</head>
-<body>
+  <style>${PRINT_SHARED_CSS}</style>
+  </head><body>
+  <div class="btn-bar">
+    <button class="btn-print" onclick="window.print()">Print</button>
+    <button class="btn-close" onclick="window.close()">Close</button>
+  </div>
   <div class="sp-header">
     <div class="sp-ward">${wardName}</div>
     <div class="sp-title">Sacrament Meeting</div>
@@ -5484,63 +5842,41 @@ function SacramentPrintView({ program, date, onClose }) {
   </div>
   ${bodyRows}
   <div class="sp-footer">The Church of Jesus Christ of Latter-day Saints</div>
-  <div style="position:fixed;top:16px;right:16px;z-index:999;display:flex;gap:10px;">
-    <button onclick="window.print()" style="padding:10px 20px;background:#003057;color:#fff;border:none;border-radius:8px;font-size:15px;font-family:sans-serif;font-weight:600;cursor:pointer;">
-      Print
-    </button>
-    <button onclick="window.close()" style="padding:10px 20px;background:#f0f0f0;color:#333;border:1px solid #ccc;border-radius:8px;font-size:15px;font-family:sans-serif;font-weight:600;cursor:pointer;">
-      Close
-    </button>
+  </body></html>`;
+}
+
+function buildNarrativePrintHtml(wardName, dateLabel, metaRows, introText, organistText, narrativeBlocks) {
+  const narrativeCSS = `
+    .narr-intro { background: #f8f6f2; border-left: 3px solid #003057; padding: 14px 18px;
+      margin-bottom: 20px; border-radius: 0 6px 6px 0; }
+    .narr-intro p { font-size: 15px; color: #333; line-height: 1.7; white-space: pre-wrap; }
+    .narr-block { margin: 8px 0; }
+    .narr-text { font-size: 15px; color: #222; line-height: 1.75; white-space: pre-wrap; }
+    .narr-editable { background: #fffef5; border: 1px solid #e8e0c0; border-radius: 4px;
+      padding: 10px 14px; display: block; }
+    .narr-block-row { align-items: flex-start; }
+    [contenteditable]:focus { outline: 2px solid #003057; border-radius: 4px; }
+  `;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+  <title>Sacrament Meeting (Narrative) — ${dateLabel}</title>
+  <style>${PRINT_SHARED_CSS}${narrativeCSS}</style>
+  </head><body>
+  <div class="btn-bar">
+    <button class="btn-print" onclick="window.print()">Print</button>
+    <button class="btn-close" onclick="window.close()">Close</button>
   </div>
-  <style>
-    @media print { div[style*="position:fixed"] { display:none !important; } }
-  </style>
-</body>
-</html>`;
+  <div class="sp-header">
+    <div class="sp-ward">${wardName}</div>
+    <div class="sp-title">Sacrament Meeting</div>
+    <div class="sp-date">${dateLabel}</div>
+    ${metaRows ? `<div class="sp-meta">${metaRows}</div>` : ""}
+  </div>
+  ${introText ? `<div class="narr-intro"><p contenteditable="true">${introText}</p></div>` : ""}
+  ${organistText ? `<div class="narr-intro"><p contenteditable="true">${organistText}</p></div>` : ""}
+  ${narrativeBlocks}
+  <div class="sp-footer">The Church of Jesus Christ of Latter-day Saints</div>
 
-    const popup = window.open("", "_blank", "width=780,height=900,menubar=yes,toolbar=yes");
-    if (!popup) {
-      notify.error("Pop-up blocked. Allow pop-ups for this site and try again.");
-      return;
-    }
-    popup.document.write(html);
-    popup.document.close();
-  };
-
-  return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.55)",zIndex:200,
-      display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
-      <div style={{background:"#fff",borderRadius:14,padding:"32px 40px",maxWidth:480,width:"100%",
-        boxShadow:"0 12px 48px rgba(0,0,0,.25)",textAlign:"center"}}>
-        <div style={{fontFamily:"Georgia,serif",fontSize:20,fontWeight:600,
-          color:C.navy,marginBottom:8}}>Print Sacrament Program</div>
-        <div style={{fontSize:13,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-          marginBottom:24,lineHeight:1.6}}>
-          {formatSundayLabel(date)}<br/>
-          <span style={{fontSize:12}}>{sortedForPrint.length} items · {presidingItems.length + accompanimentItems.length} header rows</span>
-        </div>
-        <div style={{display:"flex",gap:10,justifyContent:"center"}}>
-          <button onClick={onClose}
-            style={{padding:"9px 20px",borderRadius:8,border:`1.5px solid ${C.border}`,
-              background:"transparent",color:C.textPrimary,fontSize:13,cursor:"pointer",
-              fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>
-            Cancel
-          </button>
-          <button onClick={handlePrint}
-            style={{padding:"9px 20px",borderRadius:8,border:"none",
-              background:C.blue35,color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer",
-              fontFamily:"'Helvetica Neue',Arial,sans-serif",display:"flex",
-              alignItems:"center",gap:6}}>
-            <PrinterIcon/> Open Print Preview
-          </button>
-        </div>
-        <div style={{fontSize:11,color:C.textLight,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-          marginTop:14}}>
-          Opens in a new window — use your browser's print dialog
-        </div>
-      </div>
-    </div>
-  );
+  </body></html>`;
 }
 
 
