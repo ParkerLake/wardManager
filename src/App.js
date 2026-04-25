@@ -1996,10 +1996,13 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   const ASSIGNABLE_KEYS = ["opening_prayer", "opening_song", "spirit_thought", "closing_prayer"];
 
   // Returns the suggested assignee name for a given itemKey.
-  // Picks the bishopric member with the fewest past assignments to that slot,
-  // with ties broken by who was assigned least recently.
-  // exclude: set of names already assigned to OTHER slots in this same meeting —
-  //          one person cannot hold more than one assignment per meeting.
+  // Rules (in priority order):
+  //   1. Never assign the same slot to the same person 2 weeks in a row (hard)
+  //   2. Prefer not to assign ANY slot to the same person 2 weeks in a row (soft)
+  //   3. Fewest total past assignments to this slot (balance)
+  //   4. Least recently assigned to this slot (recency tiebreak)
+  //   5. Original roster order as stable final tiebreak
+  // exclude: names already used in other slots this meeting (no double-booking)
   const suggestAssignee = (itemKey, exclude = new Set()) => {
     const fullPool = ROSTER_POSITIONS
       .filter(p => p.group === "bishopric")
@@ -2009,31 +2012,66 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
 
     // Remove anyone already used elsewhere in this meeting
     const pool = fullPool.filter(n => !exclude.has(n));
-    if (!pool.length) return ""; // all members already assigned (edge case: tiny group)
+    if (!pool.length) return "";
 
-    // Gather all past rows for this itemKey (across all dates, not just selected)
+    // All past rows for this slot across all dates (most recent first)
     const pastRows = bmData
       .filter(r => r.itemKey === itemKey && r.assignee && r.date !== selectedDate)
-      .sort((a, b) => (a.date > b.date ? -1 : 1)); // most recent first
+      .sort((a, b) => (a.date > b.date ? -1 : 1));
 
-    // Count assignments per person
+    // Find the most recent prior meeting date (any slot)
+    const allPastDates = [...new Set(
+      bmData.filter(r => r.date !== selectedDate && r.date).map(r => r.date)
+    )].sort().reverse();
+    const lastMeetingDate = allPastDates[0] || null;
+
+    // Who had THIS slot last week (hard exclude after applying soft)
+    const hadSlotLastWeek = new Set(
+      lastMeetingDate
+        ? pastRows.filter(r => r.date === lastMeetingDate).map(r => r.assignee)
+        : []
+    );
+
+    // Who had ANY slot last week (soft prefer-to-avoid)
+    const hadAnySlotLastWeek = new Set(
+      lastMeetingDate
+        ? bmData.filter(r => r.date === lastMeetingDate && r.assignee).map(r => r.assignee)
+        : []
+    );
+
+    // Count assignments per person for this slot
     const counts = {};
     pool.forEach(name => { counts[name] = 0; });
     pastRows.forEach(r => { if (counts[r.assignee] !== undefined) counts[r.assignee]++; });
 
-    // Find minimum count
-    const minCount = Math.min(...pool.map(n => counts[n]));
-    const tied = pool.filter(n => counts[n] === minCount);
-
-    // Among tied, pick whoever hasn't been assigned most recently
-    // (i.e., the one whose last assignment was furthest in the past, or never)
+    // Last assigned date for this slot per person
     const lastAssigned = {};
-    tied.forEach(name => {
+    pool.forEach(name => {
       const lastRow = pastRows.find(r => r.assignee === name);
       lastAssigned[name] = lastRow ? lastRow.date : "0000-00-00";
     });
-    tied.sort((a, b) => (lastAssigned[a] < lastAssigned[b] ? -1 : 1));
-    return tied[0];
+
+    // Sort pool: fewest count → least recently assigned → roster order (stable)
+    const rosterOrder = {};
+    pool.forEach((name, i) => { rosterOrder[name] = i; });
+    const sorted = [...pool].sort((a, b) => {
+      if (counts[a] !== counts[b]) return counts[a] - counts[b];
+      if (lastAssigned[a] !== lastAssigned[b]) return lastAssigned[a] < lastAssigned[b] ? -1 : 1;
+      return rosterOrder[a] - rosterOrder[b]; // stable: preserve original order
+    });
+
+    // Rule 1 (hard): skip anyone who had this same slot last week
+    // Rule 2 (soft): prefer someone who had no assignment last week
+    // Try: best candidate who didn't have this slot AND didn't have any slot
+    const preferred = sorted.filter(n => !hadSlotLastWeek.has(n) && !hadAnySlotLastWeek.has(n));
+    if (preferred.length) return preferred[0];
+
+    // Soft fallback: best candidate who at least didn't have this exact slot
+    const noSameSlot = sorted.filter(n => !hadSlotLastWeek.has(n));
+    if (noSameSlot.length) return noSameSlot[0];
+
+    // Hard fallback: everyone had this slot last week (tiny pool) — pick best overall
+    return sorted[0];
   };
 
   // Auto-assign all 4 unassigned slots at once.
@@ -3427,21 +3465,62 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     if (!fullRosterPool.length) return "";
     const pool = fullRosterPool.filter(n => !exclude.has(n));
     if (!pool.length) return "";
+
+    // All past rows for this slot across all dates (most recent first)
     const pastRows = wcData
       .filter(r => r.itemKey === itemKey && r.assignee && r.date !== selectedDate)
       .sort((a, b) => (a.date > b.date ? -1 : 1));
+
+    // Most recent prior meeting date
+    const allPastDates = [...new Set(
+      wcData.filter(r => r.date !== selectedDate && r.date).map(r => r.date)
+    )].sort().reverse();
+    const lastMeetingDate = allPastDates[0] || null;
+
+    // Who had THIS slot last week (hard exclude after soft)
+    const hadSlotLastWeek = new Set(
+      lastMeetingDate
+        ? pastRows.filter(r => r.date === lastMeetingDate).map(r => r.assignee)
+        : []
+    );
+
+    // Who had ANY slot last week (soft prefer-to-avoid)
+    const hadAnySlotLastWeek = new Set(
+      lastMeetingDate
+        ? wcData.filter(r => r.date === lastMeetingDate && r.assignee).map(r => r.assignee)
+        : []
+    );
+
+    // Count assignments per person for this slot
     const counts = {};
     pool.forEach(name => { counts[name] = 0; });
     pastRows.forEach(r => { if (counts[r.assignee] !== undefined) counts[r.assignee]++; });
-    const minCount = Math.min(...pool.map(n => counts[n]));
-    const tied = pool.filter(n => counts[n] === minCount);
+
+    // Last assigned date for this slot per person
     const lastAssigned = {};
-    tied.forEach(name => {
+    pool.forEach(name => {
       const lastRow = pastRows.find(r => r.assignee === name);
       lastAssigned[name] = lastRow ? lastRow.date : "0000-00-00";
     });
-    tied.sort((a, b) => (lastAssigned[a] < lastAssigned[b] ? -1 : 1));
-    return tied[0];
+
+    // Sort: fewest count → least recently assigned → roster order (stable)
+    const rosterOrder = {};
+    pool.forEach((name, i) => { rosterOrder[name] = i; });
+    const sorted = [...pool].sort((a, b) => {
+      if (counts[a] !== counts[b]) return counts[a] - counts[b];
+      if (lastAssigned[a] !== lastAssigned[b]) return lastAssigned[a] < lastAssigned[b] ? -1 : 1;
+      return rosterOrder[a] - rosterOrder[b]; // stable: preserve roster order
+    });
+
+    // Rule 1 (hard): skip same slot as last week
+    // Rule 2 (soft): prefer no assignment at all last week
+    const preferred = sorted.filter(n => !hadSlotLastWeek.has(n) && !hadAnySlotLastWeek.has(n));
+    if (preferred.length) return preferred[0];
+
+    const noSameSlot = sorted.filter(n => !hadSlotLastWeek.has(n));
+    if (noSameSlot.length) return noSameSlot[0];
+
+    return sorted[0]; // fallback: tiny pool, everyone had this slot last week
   };
 
   const doAutoAssign = () => {
