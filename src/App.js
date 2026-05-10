@@ -519,7 +519,7 @@ function NavGroup({ group, activeTab, isActiveGroup, onSelect, compact=false }) 
 
       {open && (
         <div style={{
-          position: "absolute", top: "calc(100% + 6px)", left: 0,
+          position: "absolute", bottom: "calc(100% + 6px)", top: "auto", left: 0,
           background: "#fff", border: `1.5px solid ${C.border}`,
           borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,.12)",
           minWidth: 180, zIndex: 200, overflow: "hidden", padding: "4px 0",
@@ -3372,7 +3372,7 @@ function CalendarEventModal({ event, saving, onSave, onClose }) {
   const pad = n => String(n).padStart(2, "0");
   const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; })();
   const [f, setF] = useState({
-    date:  event?.date  || todayStr,
+    date:  event?.date  || "",
     time:  event?.time  || "",
     event: event?.event || "",
   });
