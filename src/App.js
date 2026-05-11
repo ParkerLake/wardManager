@@ -519,7 +519,7 @@ function NavGroup({ group, activeTab, isActiveGroup, onSelect, compact=false }) 
 
       {open && (
         <div style={{
-          position: "absolute", bottom: "calc(100% + 6px)", top: "auto", left: 0,
+          position: "absolute", top: "calc(100% + 6px)", left: 0,
           background: "#fff", border: `1.5px solid ${C.border}`,
           borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,.12)",
           minWidth: 180, zIndex: 200, overflow: "hidden", padding: "4px 0",
@@ -1301,6 +1301,29 @@ function PurposeCell({value,onChange}){
   </div>;
 }
 
+function DateCell({value,onChange}){
+  const[editing,setEditing]=useState(false);
+  const ref=useRef(null);
+  useEffect(()=>{
+    if(editing&&ref.current){try{ref.current.showPicker();}catch(e){ref.current.focus();}}
+  },[editing]);
+  if(!value&&!editing){
+    return<span onClick={()=>setEditing(true)}
+      style={{color:C.textLight,cursor:"pointer",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>—</span>;
+  }
+  return<div style={{display:"flex",alignItems:"center",gap:4}}>
+    <input ref={ref} type="date" value={value||""} onChange={e=>onChange(e.target.value)}
+      onBlur={()=>{if(!value)setEditing(false);}}
+      style={{background:"transparent",border:"none",outline:"none",cursor:"pointer",fontSize:12,
+        fontFamily:"'Helvetica Neue',Arial,sans-serif",color:value?C.textSecond:C.textLight,padding:0,width:"auto"}}/>
+    {value&&<button onClick={()=>{onChange("");setEditing(false);}} title="Clear date"
+      style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"2px",
+        display:"flex",alignItems:"center",lineHeight:1,borderRadius:3}}
+      onMouseEnter={e=>e.currentTarget.style.color=C.red15}
+      onMouseLeave={e=>e.currentTarget.style.color=C.textLight}><X size={11}/></button>}
+  </div>;
+}
+
 function ApptTable({data,onUpd,onDel,roster=[]}){
   return<div style={{overflowX:"auto"}}>
     <table className="wm-table">
@@ -1314,20 +1337,7 @@ function ApptTable({data,onUpd,onDel,roster=[]}){
             <td style={{minWidth:152}}><OwnerChip owner={a.owner} onChange={v=>onUpd(a.id,"owner",v)} roster={roster}/></td>
             <td style={{minWidth:185}}><PurposeCell value={a.purpose} onChange={v=>onUpd(a.id,"purpose",v)}/></td>
             <td style={{minWidth:126}}>
-              <div style={{display:"flex",alignItems:"center",gap:4}}>
-                <input type="date" value={a.apptDate} onChange={e=>onUpd(a.id,"apptDate",e.target.value)}
-                  style={{background:"transparent",border:"none",outline:"none",cursor:"pointer",fontSize:12,
-                    fontFamily:"'Helvetica Neue',Arial,sans-serif",color:a.apptDate?C.textSecond:C.textLight,padding:0,width:"auto"}}/>
-                {a.apptDate && (
-                  <button onClick={()=>onUpd(a.id,"apptDate","")} title="Clear date"
-                    style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"2px",
-                      display:"flex",alignItems:"center",lineHeight:1,borderRadius:3}}
-                    onMouseEnter={e=>e.currentTarget.style.color=C.red15}
-                    onMouseLeave={e=>e.currentTarget.style.color=C.textLight}>
-                    <X size={11}/>
-                  </button>
-                )}
-              </div>
+              <DateCell value={a.apptDate} onChange={v=>onUpd(a.id,"apptDate",v)}/>
             </td>
             <td style={{minWidth:165}}><InlineText serif value={a.notes} onChange={v=>onUpd(a.id,"notes",v)}/></td>
             <td style={{width:44,textAlign:"center"}}><button className="btn-del" onClick={()=>onDel(a.id)}><XIcon/></button></td>
@@ -5701,9 +5711,11 @@ function SacramentPrintView({ program, date, onClose, narrativeTemplates={}, cal
       const type = item.label || "Announcement";
       const structured = ["Calling","Releasing","New Member","Ordination"].includes(type);
       if (!structured) {
+        const displayLabel = type === "Custom" ? (item.notes||"Custom") : (item.label||"Announcement");
+        const displayValue = type === "Custom" ? (item.value||"") : (item.value||"—");
         return `<div class="sp-item">
-          <div class="sp-label">${item.label||"Announcement"}</div>
-          <div class="sp-value-col"><div class="sp-value">${item.value||"—"}</div></div>
+          <div class="sp-label">${displayLabel}</div>
+          <div class="sp-value-col"><div class="sp-value">${displayValue}</div></div>
         </div>`;
       }
       let rows = [];
