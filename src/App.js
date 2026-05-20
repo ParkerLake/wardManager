@@ -1302,26 +1302,106 @@ function PurposeCell({value,onChange}){
 }
 
 function DateCell({value,onChange}){
-  const[editing,setEditing]=useState(false);
-  const ref=useRef(null);
+  const [open,setOpen]=useState(false);
+  const [viewYear,setViewYear]=useState(()=>value?parseInt(value.slice(0,4)):new Date().getFullYear());
+  const [viewMonth,setViewMonth]=useState(()=>value?parseInt(value.slice(5,7))-1:new Date().getMonth());
+  const [popPos,setPopPos]=useState({left:0,top:0,bottom:"auto"});
+  const anchorRef=useRef(null);
+  const popRef=useRef(null);
+
+  // Close on outside click
   useEffect(()=>{
-    if(editing&&ref.current){try{ref.current.showPicker();}catch(e){ref.current.focus();}}
-  },[editing]);
-  if(!value&&!editing){
-    return<span onClick={()=>setEditing(true)}
-      style={{color:C.textLight,cursor:"pointer",fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>—</span>;
-  }
-  return<div style={{display:"flex",alignItems:"center",gap:4}}>
-    <input ref={ref} type="date" value={value||""} onChange={e=>onChange(e.target.value)}
-      onBlur={()=>{if(!value)setEditing(false);}}
-      style={{background:"transparent",border:"none",outline:"none",cursor:"pointer",fontSize:12,
-        fontFamily:"'Helvetica Neue',Arial,sans-serif",color:value?C.textSecond:C.textLight,padding:0,width:"auto"}}/>
-    {value&&<button onClick={()=>{onChange("");setEditing(false);}} title="Clear date"
-      style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"2px",
-        display:"flex",alignItems:"center",lineHeight:1,borderRadius:3}}
-      onMouseEnter={e=>e.currentTarget.style.color=C.red15}
-      onMouseLeave={e=>e.currentTarget.style.color=C.textLight}><X size={11}/></button>}
-  </div>;
+    if(!open)return;
+    const h=(e)=>{
+      if(!popRef.current?.contains(e.target)&&!anchorRef.current?.contains(e.target))setOpen(false);
+    };
+    document.addEventListener("mousedown",h);
+    return()=>document.removeEventListener("mousedown",h);
+  },[open]);
+
+  // Keep view in sync when value changes externally
+  useEffect(()=>{
+    if(value){setViewYear(parseInt(value.slice(0,4)));setViewMonth(parseInt(value.slice(5,7))-1);}
+  },[value]);
+
+  const handleOpen=()=>{
+    if(anchorRef.current){
+      const r=anchorRef.current.getBoundingClientRect();
+      const goAbove=window.innerHeight-r.bottom<272;
+      setPopPos({
+        left:Math.min(r.left,window.innerWidth-218),
+        top:goAbove?"auto":r.bottom+4,
+        bottom:goAbove?window.innerHeight-r.top+4:"auto",
+      });
+    }
+    setOpen(o=>!o);
+  };
+
+  const select=(ds)=>{onChange(ds);setOpen(false);};
+  const clear=(e)=>{e.stopPropagation();onChange("");setOpen(false);};
+  const display=value?`${value.slice(5,7)}/${value.slice(8,10)}/${value.slice(0,4)}`:"";
+  const todayStr=new Date().toISOString().slice(0,10);
+  const toDs=(d)=>`${viewYear}-${String(viewMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+
+  const firstDay=new Date(viewYear,viewMonth,1).getDay();
+  const daysInMonth=new Date(viewYear,viewMonth+1,0).getDate();
+  const cells=[];
+  for(let i=0;i<firstDay;i++)cells.push(null);
+  for(let d=1;d<=daysInMonth;d++)cells.push(d);
+
+  const MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const prevM=()=>{if(viewMonth===0){setViewMonth(11);setViewYear(y=>y-1);}else setViewMonth(m=>m-1);};
+  const nextM=()=>{if(viewMonth===11){setViewMonth(0);setViewYear(y=>y+1);}else setViewMonth(m=>m+1);};
+
+  return(
+    <>
+      <div ref={anchorRef} style={{display:"flex",alignItems:"center",gap:4}}>
+        <span onClick={handleOpen} style={{fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+          color:value?C.textSecond:C.textLight,cursor:"pointer"}}>
+          {display||"—"}
+        </span>
+        {value&&<button onClick={clear} title="Clear date"
+          style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,padding:"2px",
+            display:"flex",alignItems:"center",lineHeight:1,borderRadius:3}}
+          onMouseEnter={e=>e.currentTarget.style.color=C.red15}
+          onMouseLeave={e=>e.currentTarget.style.color=C.textLight}><X size={11}/></button>}
+      </div>
+      {open&&<div ref={popRef} style={{
+        position:"fixed",left:popPos.left,top:popPos.top,bottom:popPos.bottom,
+        background:"#fff",borderRadius:10,boxShadow:"0 8px 32px rgba(0,48,87,.18)",
+        padding:"12px",width:212,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+        userSelect:"none",zIndex:9999,
+      }}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+          <button onClick={prevM} style={{background:"none",border:"none",cursor:"pointer",
+            padding:"2px 8px",borderRadius:4,color:C.blue40,fontSize:16,lineHeight:1}}>‹</button>
+          <span style={{fontSize:13,fontWeight:600,color:C.blue40}}>{MONTHS[viewMonth]} {viewYear}</span>
+          <button onClick={nextM} style={{background:"none",border:"none",cursor:"pointer",
+            padding:"2px 8px",borderRadius:4,color:C.blue40,fontSize:16,lineHeight:1}}>›</button>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:4}}>
+          {["Su","Mo","Tu","We","Th","Fr","Sa"].map(d=>(
+            <div key={d} style={{textAlign:"center",fontSize:10,color:C.textMuted,fontWeight:600,padding:"2px 0"}}>{d}</div>
+          ))}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+          {cells.map((d,i)=>{
+            if(!d)return<div key={"e"+i}/>;
+            const ds=toDs(d);
+            const sel=ds===value;
+            const tod=ds===todayStr;
+            return<button key={d} onClick={()=>select(ds)} style={{
+              background:sel?C.blue40:"transparent",
+              color:sel?"#fff":tod?C.blue35:C.textPrimary,
+              border:tod&&!sel?`1px solid ${C.blue35}`:"1px solid transparent",
+              borderRadius:4,cursor:"pointer",fontSize:12,padding:"4px 0",
+              textAlign:"center",fontWeight:sel||tod?600:400,lineHeight:1.4,
+            }}>{d}</button>;
+          })}
+        </div>
+      </div>}
+    </>
+  );
 }
 
 function ApptTable({data,onUpd,onDel,roster=[]}){
