@@ -157,7 +157,7 @@ label{font-family:'Helvetica Neue',Arial,sans-serif;font-size:10px;font-weight:7
   backdrop-filter:blur(6px);z-index:200;
   display:flex;align-items:center;justify-content:center;padding:12px;}
 .modal{background:#fff;border-radius:16px;width:100%;max-width:560px;
-  overflow:hidden;box-shadow:0 24px 64px rgba(0,48,87,.18);}
+  box-shadow:0 24px 64px rgba(0,48,87,.18);}
 .modal-lg{max-width:760px;}
 .modal-hd{background:#005581;padding:22px 28px 20px;position:relative;overflow:hidden;}
 .modal-hd::before{content:'';position:absolute;top:-20%;right:-5%;width:60%;height:160%;
@@ -5913,7 +5913,15 @@ const PRINT_SHARED_CSS = `
     font-family: sans-serif; font-weight: 600; cursor: pointer; }
   .btn-print { background: #003057; color: #fff; }
   .btn-close { background: #f0f0f0; color: #333; border: 1px solid #ccc !important; }
-  @media print { .btn-bar { display: none !important; } @page { margin: 0.5in; } body { padding: 24px 32px; } }
+  @media print {
+    .btn-bar { display: none !important; }
+    @page { margin: 0.5in; }
+    body { padding: 24px 32px; }
+    .sp-label { color: #333 !important; font-weight: 600 !important; }
+    .sp-ward  { color: #444 !important; }
+    .sp-meta  { color: #333 !important; }
+    .sp-notes { color: #444 !important; }
+  }
 `;
 
 function buildPrintHtml(wardName, dateLabel, metaRows, bodyRows) {
