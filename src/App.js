@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Plus, X, ChevronUp, ChevronDown, LayoutList, Columns2, GripVertical, Printer, Save,
   User, HandMetal, Music2, Piano, Mic2, Sparkles, Megaphone,
   ClipboardList, Plane, BookOpen, Calendar, Tag, Star,
@@ -14,8 +14,8 @@ import config from "./config";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const APPT_STAGES      = ["Need to Schedule","Contacted","Scheduled","Completed"];
-const CALLING_STAGES   = ["Discuss","Approved to Call","Accepted","Sustained","Set Apart","Completed"];
-const RELEASING_STAGES = ["Discuss","Approved to Release","Releasing Acknowledged","Thanked at Pulpit","Released","Completed"];
+const CALLING_STAGES   = ["Discuss","Approved to Call","Accepted","Announce in Sacrament","Sustained","Set Apart"];
+const RELEASING_STAGES = ["Discuss","Approved to Release","Accepted","Announce in Sacrament","Released"];
 const LEADERS          = ["Bishop","1st Counsellor","2nd Counsellor"];
 const ROSTER_POSITIONS = [
   {role:"Bishop",           group:"bishopric"},
@@ -65,16 +65,18 @@ const APPT_STAGE_STYLE = {
   "Completed":       { bg:"#EAF4EA",border:"#50A83E",text:"#206B3F",dot:"#50A83E"},
 };
 const PIPELINE_STAGE_STYLE = {
-  "Discuss":                {bg:"#FEF3E2",border:"#F68D2E",text:"#974A07",dot:"#F68D2E"},
-  "Approved to Call":       {bg:"#E6F4FA",border:"#007DA5",text:"#005581",dot:"#007DA5"},
-  "Accepted":               {bg:"#EAF0F6",border:"#005581",text:"#003057",dot:"#005581"},
-  "Sustained":              {bg:"#F3EDF8",border:"#7B5EA7",text:"#4A2A7A",dot:"#7B5EA7"},
-  "Set Apart":              {bg:"#E8F4FD",border:"#49CCE6",text:"#00558F",dot:"#49CCE6"},
-  "Approved to Release":    {bg:"#E6F4FA",border:"#007DA5",text:"#005581",dot:"#007DA5"},
-  "Releasing Acknowledged": {bg:"#EAF0F6",border:"#005581",text:"#003057",dot:"#005581"},
-  "Thanked at Pulpit":      {bg:"#F3EDF8",border:"#7B5EA7",text:"#4A2A7A",dot:"#7B5EA7"},
-  "Released":               {bg:"#E8F4FD",border:"#49CCE6",text:"#00558F",dot:"#49CCE6"},
-  "Completed":              {bg:"#EAF4EA",border:"#50A83E",text:"#206B3F",dot:"#50A83E"},
+  "Discuss":                  {bg:"#FEF3E2",border:"#F68D2E",text:"#974A07",dot:"#F68D2E"},
+  "Approved to Call":         {bg:"#E6F4FA",border:"#007DA5",text:"#005581",dot:"#007DA5"},
+  "Approved to Release":      {bg:"#E6F4FA",border:"#007DA5",text:"#005581",dot:"#007DA5"},
+  "Accepted":                 {bg:"#EAF0F6",border:"#005581",text:"#003057",dot:"#005581"},
+  "Announce in Sacrament":    {bg:"#FDF0F5",border:"#C2185B",text:"#880E4F",dot:"#C2185B"},
+  "Sustained":                {bg:"#F3EDF8",border:"#7B5EA7",text:"#4A2A7A",dot:"#7B5EA7"},
+  "Set Apart":                {bg:"#E8F4FD",border:"#49CCE6",text:"#00558F",dot:"#49CCE6"},
+  "Released":                 {bg:"#EAF4EA",border:"#50A83E",text:"#206B3F",dot:"#50A83E"},
+  // Legacy stage names — kept so existing cards render correctly during migration
+  "Releasing Acknowledged":   {bg:"#EAF0F6",border:"#005581",text:"#003057",dot:"#005581"},
+  "Thanked at Pulpit":        {bg:"#F3EDF8",border:"#7B5EA7",text:"#4A2A7A",dot:"#7B5EA7"},
+  "Completed":                {bg:"#EAF4EA",border:"#50A83E",text:"#206B3F",dot:"#50A83E"},
 };
 const OWNER_STYLE = {
   "Bishop":         {bg:"#FEF9E6",border:"#C1A01E",text:"#974A07",initials:"B"},
@@ -109,7 +111,7 @@ body{background:#F5F3EE;font-family:Georgia,serif;}
 ::-webkit-scrollbar-track{background:#EFEFE7;}
 ::-webkit-scrollbar-thumb{background:#D5CFBE;border-radius:3px;}
 .tab-btn{background:none;border:none;cursor:pointer;font-family:inherit;transition:all .2s;}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
 @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
 @keyframes slideIn{from{opacity:0;transform:translateX(100%);}to{opacity:1;transform:translateX(0);}}
 .animate-in{animation:fadeUp .28s ease forwards;}
@@ -658,6 +660,8 @@ function MainApp({ user, token, onSignOut }) {
   const [calendar,setCalendar]     = useState([]);
   const [bishopricLinks,setBishopricLinks] = useState([]);
   const [wcLinks,setWcLinks]               = useState([]);
+  const [callingsRoster,setCallingsRoster] = useState([]);  // from callings roster sheet
+  const [rosterError,setRosterError]       = useState(null); // error string if roster pull failed
   const [hasPulled,setHasPulled]   = useState(false);
   const [syncStatus,setSyncStatus] = useState("idle");
   const [lastSyncedAt,setLastSync] = useState(null);
@@ -749,6 +753,13 @@ function MainApp({ user, token, onSignOut }) {
             const sp = await pullSacrament();
             if(sp.sacramentProgram && !sacrDirty.current){ setSacrament(sp.sacramentProgram); sacrRef.current=sp.sacramentProgram; }
           } catch(e) { /* sacrament sheet not yet configured */ }
+          // Callings Roster (non-blocking)
+          try {
+            const { pullCallingsRoster } = await import("./sheets");
+            const cr = await pullCallingsRoster();
+            setCallingsRoster(cr.callingsRoster || []);
+            setRosterError(cr.rosterError || null);
+          } catch(e) { setRosterError(e.message||"Roster pull failed"); }
         }
       }
       // ── Both roles: pull Ward Council sheet, Calendar, and Roster ──
@@ -996,6 +1007,7 @@ function MainApp({ user, token, onSignOut }) {
     ]},
     { id:"calendar", label:"Calendar", flat:true },
     { id:"links",    label:"Links",    flat:true },
+    { id:"prayers",  label:"Sacrament Prayers", flat:true },
     { id:"admin", label:"Admin", children:[
       {id:"alerts",  label:"Alerts"},
       {id:"notes", label:"Notes"},
@@ -1127,26 +1139,42 @@ function MainApp({ user, token, onSignOut }) {
             } catch(e){ notify.error("Save failed: "+e.message,6000); }
             finally { appointmentsDirty.current=false; }
           }}/>}
-        {isAdmin&&tab==="callings"    &&<PipelineTab title="Callings"   stages={CALLING_STAGES}   data={callings}   setData={setCallings}   onStageChange={(item,stage)=>autoCreateAppointments(apptRef.current||[],[{...item,stage}],[])} onMutate={async(updated)=>{
-            callRef.current=updated;
-            pipelineDirty.current=true;
-            try {
-              const {pushAll}=await import("./sheets");
-              await pushAll({appointments:apptRef.current,callings:updated,releasings:relRef.current,members:membRef.current});
-              setSyncStatus("idle");
-            } catch(e){ notify.error("Save failed: "+e.message,6000); }
-            finally { pipelineDirty.current=false; }
-          }}/>}
-        {isAdmin&&tab==="releasings"  &&<PipelineTab title="Releasings" stages={RELEASING_STAGES} data={releasings} setData={setReleasings} onStageChange={(item,stage)=>autoCreateAppointments(apptRef.current||[],[],[{...item,stage}])} onMutate={async(updated)=>{
-            relRef.current=updated;
-            pipelineDirty.current=true;
-            try {
-              const {pushAll}=await import("./sheets");
-              await pushAll({appointments:apptRef.current,callings:callRef.current,releasings:updated,members:membRef.current});
-              setSyncStatus("idle");
-            } catch(e){ notify.error("Save failed: "+e.message,6000); }
-            finally { pipelineDirty.current=false; }
-          }}/>}
+        {isAdmin&&(tab==="callings"||tab==="releasings")&&<CallingsPipelinePage
+            mode={tab}
+            callings={callings} setCallings={setCallings} callRef={callRef}
+            releasings={releasings} setReleasings={setReleasings} relRef={relRef}
+            apptRef={apptRef} callingsRoster={callingsRoster}
+            rosterError={rosterError}
+            onRefreshRoster={async()=>{
+              try{
+                const{pullCallingsRoster}=await import("./sheets");
+                const cr=await pullCallingsRoster();
+                setCallingsRoster(cr.callingsRoster||[]);
+                setRosterError(cr.rosterError||null);
+                if(cr.rosterError) notify.error("Roster: "+cr.rosterError,8000);
+                else notify.success(`Roster refreshed — ${(cr.callingsRoster||[]).length} positions loaded`);
+              }catch(e){setRosterError(e.message);notify.error("Roster refresh failed: "+e.message,8000);}
+            }}
+            autoCreateAppointments={autoCreateAppointments}
+            onMutateCallings={async(updated)=>{
+              pipelineDirty.current=true;
+              try{const{pushAll}=await import("./sheets");await pushAll({appointments:apptRef.current,callings:updated,releasings:relRef.current,members:membRef.current});setSyncStatus("idle");}
+              catch(e){notify.error("Save failed: "+e.message,6000);}
+              finally{pipelineDirty.current=false;}
+            }}
+            onMutateReleasings={async(updated)=>{
+              pipelineDirty.current=true;
+              try{const{pushAll}=await import("./sheets");await pushAll({appointments:apptRef.current,callings:callRef.current,releasings:updated,members:membRef.current});setSyncStatus("idle");}
+              catch(e){notify.error("Save failed: "+e.message,6000);}
+              finally{pipelineDirty.current=false;}
+            }}
+            onMutateBoth={async(updatedCallings,updatedReleasings)=>{
+              pipelineDirty.current=true;
+              try{const{pushAll}=await import("./sheets");await pushAll({appointments:apptRef.current,callings:updatedCallings,releasings:updatedReleasings,members:membRef.current});setSyncStatus("idle");}
+              catch(e){notify.error("Save failed: "+e.message,6000);}
+              finally{pipelineDirty.current=false;}
+            }}
+          />}
         {isAdmin&&tab==="bishopric"   &&<BishopricCouncilTab bishopricMeeting={bishopricMeeting} setBishopricMeeting={setBishopricMeeting} callings={callings} releasings={releasings} sacramentProgram={sacramentProgram} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isMobile={isMobile} onSaveStart={()=>{bmDirty.current=true;}} onSaveEnd={()=>{bmDirty.current=false;}}/>}
         {isAdmin&&tab==="notes"       &&<NotesTab    data={members}  setData={setMembers}/>}
         {isAdmin&&tab==="alerts"      &&<AlertsTab appointments={appointments} callings={callings} releasings={releasings} isMobile={isMobile}/>}
@@ -1154,6 +1182,7 @@ function MainApp({ user, token, onSignOut }) {
         {(isAdmin||isWardCouncil)&&tab==="calendar"&&<CalendarTab calendar={calendar} setCalendar={setCalendar} token={token} isMobile={isMobile} onSaveStart={()=>{calendarDirty.current=true;}} onSaveEnd={()=>{calendarDirty.current=false;}}/>}
         {(isAdmin||isWardCouncil)&&tab==="ward-council"&&<WardCouncilTab wardCouncilMeeting={wardCouncilMeeting} setWardCouncilMeeting={setWardCouncilMeeting} calendar={calendar} roster={roster} token={token} onNavigate={setTab} isAdmin={isAdmin} isMobile={isMobile} onSaveStart={()=>{wcDirty.current=true;}} onSaveEnd={()=>{wcDirty.current=false;}}/>}
         {(isAdmin||isWardCouncil)&&tab==="links"&&<LinksTab bishopricLinks={isAdmin?bishopricLinks:null} setBishopricLinks={setBishopricLinks} wcLinks={wcLinks} setWcLinks={setWcLinks} token={token} isAdmin={isAdmin}/>}
+        {isAdmin&&tab==="prayers"&&<PrayersTab/>}
         {!isAdmin&&!isWardCouncil&&<UnauthorizedView/>}
       </main>
 
@@ -1513,6 +1542,627 @@ function AppointmentModal({item,onSave,onClose,roster=[]}){
     </div>
     <ModalFooter onClose={onClose} onSave={()=>onSave(f)} saveLabel="Save Appointment"/>
   </ModalShell>;
+}
+
+// ─── Callings & Releasings Combined Page ─────────────────────────────────────
+
+function CallingCardModal({ item, callingsRoster, stages, onSave, onClose, onDelete }) {
+  const isExisting = !!(item?.id);
+
+  // ── Step 1: unique calling names grouped by org ──
+  const { orgGroups, uniqueCallings } = useMemo(()=>{
+    const groups={};
+    callingsRoster.forEach(row=>{
+      const org=row.organization||"Other";
+      if(!groups[org]) groups[org]=[];
+      // Each row is a distinct slot even if same calling name
+      groups[org].push(row);
+    });
+    return {
+      orgGroups: Object.entries(groups).sort(([a],[b])=>a.localeCompare(b)),
+      uniqueCallings: groups, // org → rows[]
+    };
+  },[callingsRoster]);
+
+  // Selected calling name (Step 1)
+  const [selectedCalling, setSelectedCalling] = useState(
+    item?.calling || ""
+  );
+  // Is "add new" mode?
+  const [isNewCalling, setIsNewCalling] = useState(false);
+  const [newOrg, setNewOrg] = useState("");
+  const [newCallingName, setNewCallingName] = useState("");
+
+  // Slots for the selected calling (Step 2)
+  const slotsForCalling = useMemo(()=>{
+    if(!selectedCalling) return [];
+    return callingsRoster.filter(r=>r.calling===selectedCalling);
+  },[callingsRoster,selectedCalling]);
+
+  const [selectedSlotRowIndex, setSelectedSlotRowIndex] = useState(
+    item?.rosterRowIndex || ""
+  );
+
+  // Derive currentHolder from selected slot
+  const selectedSlot = slotsForCalling.find(r=>r.rowIndex===Number(selectedSlotRowIndex));
+  const currentHolder = selectedSlot ? (selectedSlot.isVacant ? "" : selectedSlot.name) : (item?.currentHolder || "");
+  const isVacantPosition = !currentHolder || currentHolder.toLowerCase().includes("vacant");
+
+  // Rest of form
+  const [name, setName] = useState(item?.name || "");
+  const [stage, setStage] = useState(item?.stage || stages[0]);
+  const [notes, setNotes] = useState(item?.notes || "");
+
+  const handleCallingSelect = (e) => {
+    const val = e.target.value;
+    if(val==="__new__"){
+      setIsNewCalling(true);
+      setSelectedCalling("");
+      setSelectedSlotRowIndex("");
+    } else {
+      setIsNewCalling(false);
+      setSelectedCalling(val);
+      setSelectedSlotRowIndex(""); // reset slot
+    }
+  };
+
+  const handleSave = () => {
+    const callingName = isNewCalling ? newCallingName : selectedCalling;
+    const organization = isNewCalling ? newOrg : (selectedSlot?.organization || slotsForCalling[0]?.organization || "");
+    const rosterRowIndex = isNewCalling ? null : (selectedSlot?.rowIndex || null);
+
+    onSave({
+      ...(item||{}),
+      name,
+      calling: callingName,
+      organization,
+      rosterRowIndex,
+      currentHolder,
+      stage,
+      notes,
+      linkedId: item?.linkedId || null,
+      positionHandedOff: item?.positionHandedOff || false,
+      isNewCalling, // flag so finalize knows to append vs update
+      newOrg: isNewCalling ? newOrg : undefined,
+    });
+  };
+
+  return(
+    <ModalShell onClose={onClose} title={name||selectedCalling||"New Calling"} subtitle={`${item?"Edit":"New"} Calling`}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+
+        {/* Step 1 — Pick calling */}
+        <FormRow label="Calling / Position" full>
+          <select
+            value={isNewCalling?"__new__":selectedCalling}
+            onChange={handleCallingSelect}
+            style={{width:"100%"}}>
+            <option value="">— Select a position —</option>
+            {orgGroups.map(([org,rows])=>{
+              // Deduplicate calling names within this org
+              const seen=new Set();
+              const uniqueInOrg=rows.filter(r=>{if(seen.has(r.calling))return false;seen.add(r.calling);return true;});
+              return(
+                <optgroup key={org} label={org}>
+                  {uniqueInOrg.map(r=><option key={r.calling} value={r.calling}>{r.calling}</option>)}
+                </optgroup>
+              );
+            })}
+            <option value="__new__">+ Add new calling to roster…</option>
+          </select>
+        </FormRow>
+
+        {/* New calling fields */}
+        {isNewCalling&&<>
+          <FormRow label="Organization" full>
+            <input value={newOrg} onChange={e=>setNewOrg(e.target.value)} placeholder="e.g. Primary"/>
+          </FormRow>
+          <FormRow label="Position Name" full>
+            <input value={newCallingName} onChange={e=>setNewCallingName(e.target.value)} placeholder="e.g. Nursery Leader"/>
+          </FormRow>
+        </>}
+
+        {/* Step 2 — Pick slot (only when calling has slots and not adding new) */}
+        {!isNewCalling&&slotsForCalling.length>0&&(
+          <FormRow label="Whose spot are they filling?" full>
+            <select
+              value={selectedSlotRowIndex}
+              onChange={e=>setSelectedSlotRowIndex(e.target.value)}
+              style={{width:"100%"}}>
+              <option value="">— Select slot —</option>
+              {slotsForCalling.map(r=>(
+                <option key={r.rowIndex} value={r.rowIndex}>
+                  {r.isVacant?"(Vacant)":r.name}
+                </option>
+              ))}
+            </select>
+            {currentHolder&&!isVacantPosition&&(
+              <div style={{marginTop:6,padding:"6px 10px",fontSize:11,
+                background:"#FEF3E2",border:"1px solid #F68D2E",borderRadius:6,color:"#974A07",
+                fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>
+                ⚠ Replacing <strong>{currentHolder}</strong> — a linked releasing will be auto-created.
+              </div>
+            )}
+          </FormRow>
+        )}
+
+        {/* Member name */}
+        <FormRow label="Member Being Called" full>
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Full name"/>
+        </FormRow>
+
+        <FormRow label="Stage" full>
+          <select value={stage} onChange={e=>setStage(e.target.value)}>
+            {stages.map(x=><option key={x}>{x}</option>)}
+          </select>
+        </FormRow>
+        <FormRow label="Notes" full>
+          <textarea rows={2} value={notes} onChange={e=>setNotes(e.target.value)} style={{resize:"vertical"}}/>
+        </FormRow>
+      </div>
+
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:24}}>
+        {isExisting&&onDelete
+          ?<button onClick={()=>{onDelete(item.id);onClose();}}
+              style={{background:"none",border:`1.5px solid ${C.red15}`,color:C.red15,borderRadius:8,
+                padding:"8px 16px",fontSize:13,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+              <X size={13}/> Delete
+            </button>
+          :<div/>}
+        <ModalFooter onClose={onClose} onSave={handleSave} saveLabel="Save Calling" inline/>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ReleasingCardModal({ item, callingsRoster, stages, onSave, onClose, onDelete }) {
+  const isExisting = !!(item?.id);
+  // If this releasing was auto-created from a calling card, the position is already locked in
+  const isLinked = !!(item?.linkedId);
+
+  // Unique calling names grouped by org (same structure as CallingCardModal)
+  const orgGroups = useMemo(()=>{
+    const groups={};
+    (callingsRoster||[]).forEach(row=>{
+      const org=row.organization||"Other";
+      if(!groups[org]) groups[org]=[];
+      groups[org].push(row);
+    });
+    return Object.entries(groups).sort(([a],[b])=>a.localeCompare(b));
+  },[callingsRoster]);
+
+  // Step 1 — calling name
+  const [selectedCalling, setSelectedCalling] = useState(item?.calling||"");
+
+  // Step 2 — slots for the selected calling
+  const slotsForCalling = useMemo(()=>{
+    if(!selectedCalling) return [];
+    return (callingsRoster||[]).filter(r=>r.calling===selectedCalling);
+  },[callingsRoster,selectedCalling]);
+
+  const [selectedSlotRowIndex, setSelectedSlotRowIndex] = useState(
+    item?.rosterRowIndex ? String(item.rosterRowIndex) : ""
+  );
+  const selectedSlot = slotsForCalling.find(r=>r.rowIndex===Number(selectedSlotRowIndex));
+
+  // Name auto-fills from slot selection but stays editable
+  const [name, setName] = useState(item?.name||"");
+  const [stage, setStage] = useState(item?.stage||stages[0]);
+  const [notes, setNotes] = useState(item?.notes||"");
+
+  const handleCallingSelect = (e) => {
+    setSelectedCalling(e.target.value);
+    setSelectedSlotRowIndex(""); // reset slot when calling changes
+  };
+
+  const handleSlotChange = (e) => {
+    const val = e.target.value;
+    setSelectedSlotRowIndex(val);
+    const slot = slotsForCalling.find(r=>r.rowIndex===Number(val));
+    if(slot&&!slot.isVacant) setName(slot.name); // auto-fill name
+  };
+
+  const handleSave = () => {
+    const rosterRowIndex = isLinked ? (item?.rosterRowIndex||null) : (selectedSlot?.rowIndex||null);
+    const organization   = isLinked ? (item?.organization||"")    : (selectedSlot?.organization||"");
+    const callingName    = isLinked ? (item?.calling||"")         : selectedCalling;
+    onSave({
+      ...(item||{}),
+      name,
+      calling: callingName,
+      organization,
+      rosterRowIndex,
+      stage,
+      notes,
+      linkedId: item?.linkedId||null,
+      positionHandedOff: item?.positionHandedOff||false,
+    });
+  };
+
+  return(
+    <ModalShell onClose={onClose} title={name||selectedCalling||"New Releasing"} subtitle={`${isExisting?"Edit":"New"} Releasing`}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+
+        {/* ── Calling selector (Step 1) ── */}
+        {isLinked ? (
+          // Linked releasing — position locked, show read-only
+          <FormRow label="Calling / Position" full>
+            <input value={item?.calling||""} readOnly
+              style={{background:"#f5f5f5",color:C.textMuted,cursor:"default"}}/>
+          </FormRow>
+        ) : (
+          <FormRow label="Calling / Position" full>
+            <select value={selectedCalling} onChange={handleCallingSelect} style={{width:"100%"}}>
+              <option value="">— Select a calling —</option>
+              {orgGroups.map(([org,rows])=>(
+                <optgroup key={org} label={org}>
+                  {[...new Set(rows.map(r=>r.calling))].map(cn=>(
+                    <option key={cn} value={cn}>{cn}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </FormRow>
+        )}
+
+        {/* ── Slot / person selector (Step 2) ── */}
+        {!isLinked&&selectedCalling&&slotsForCalling.length>0&&(
+          <FormRow label="Person being released" full>
+            <select value={selectedSlotRowIndex} onChange={handleSlotChange} style={{width:"100%"}}>
+              <option value="">— Select person —</option>
+              {slotsForCalling.map(r=>(
+                <option key={r.rowIndex} value={r.rowIndex} disabled={r.isVacant}>
+                  {r.isVacant?"(Vacant — nothing to release)":r.name}
+                </option>
+              ))}
+            </select>
+          </FormRow>
+        )}
+
+        {/* ── Member name (editable, auto-filled from slot) ── */}
+        <FormRow label="Member Name" full>
+          <input value={name} onChange={e=>setName(e.target.value)}
+            placeholder={isLinked?"Name auto-set from linked calling":"Auto-filled after selecting person above"}/>
+        </FormRow>
+
+        <FormRow label="Stage" full>
+          <select value={stage} onChange={e=>setStage(e.target.value)}>{stages.map(x=><option key={x}>{x}</option>)}</select>
+        </FormRow>
+        <FormRow label="Notes" full>
+          <textarea rows={3} value={notes} onChange={e=>setNotes(e.target.value)} style={{resize:"vertical"}}/>
+        </FormRow>
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:24}}>
+        {isExisting&&onDelete
+          ?<button onClick={()=>{onDelete(item.id);onClose();}}
+              style={{background:"none",border:`1.5px solid ${C.red15}`,color:C.red15,borderRadius:8,
+                padding:"8px 16px",fontSize:13,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+                fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+              <X size={13}/> Delete
+            </button>
+          :<div/>}
+        <ModalFooter onClose={onClose} onSave={handleSave} saveLabel="Save Releasing" inline/>
+      </div>
+    </ModalShell>
+  );
+}
+
+function CallingKanban({data,stages,onEdit,onMove,onStageChange,onDel,onFinalize,finalizeStage}){
+  const[dragging,setDragging]=useState(null);
+  const[dragOver,setDragOver]=useState(null);
+  const onDragStart=(e,item)=>{setDragging(item);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",item.id);};
+  const onDragEnd=()=>{setDragging(null);setDragOver(null);};
+  const onDragOverCol=(e,col)=>{e.preventDefault();e.dataTransfer.dropEffect="move";setDragOver({col});};
+  const onDrop=(e,targetStage)=>{e.preventDefault();if(dragging&&dragging.stage!==targetStage)onStageChange(dragging.id,targetStage);setDragging(null);setDragOver(null);};
+  return<div style={{display:"flex",gap:10,overflowX:"auto",paddingBottom:8}}>
+    {stages.map(s=>{
+      const items=data.filter(c=>c.stage===s);const st=PIPELINE_STAGE_STYLE[s]||{};
+      const isOver=dragOver?.col===s;const isDragSource=dragging?.stage===s;
+      const isFinalizeStage=s===finalizeStage;
+      return(
+        <div key={s} className="kanban-col" style={{minWidth:isFinalizeStage?220:200,transition:"background .15s",
+          background:isOver&&!isDragSource?`color-mix(in srgb, ${st.bg||C.surfaceWarm} 70%, white)`:undefined,
+          outline:isOver&&!isDragSource?`2px dashed ${st.border||C.border}`:undefined,outlineOffset:-2}}
+          onDragOver={e=>onDragOverCol(e,s)} onDragLeave={()=>setDragOver(null)} onDrop={e=>onDrop(e,s)}>
+          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:13,paddingBottom:10,borderBottom:`2px solid ${st.border||C.border}`}}>
+            <span style={{width:8,height:8,borderRadius:"50%",background:st.dot||C.textMuted,flexShrink:0}}/>
+            <span style={{fontSize:10,fontWeight:700,letterSpacing:".09em",textTransform:"uppercase",color:st.text||C.textMuted,flex:1,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>{s}</span>
+            <span style={{fontFamily:"Georgia,serif",fontSize:14,color:st.text||C.textMuted,background:st.bg||C.surfaceWarm,border:`1px solid ${st.border||C.border}`,borderRadius:20,padding:"1px 8px"}}>{items.length}</span>
+          </div>
+          {items.map(c=>(
+            <div key={c.id} className="kanban-card" draggable
+              onDragStart={e=>onDragStart(e,c)} onDragEnd={onDragEnd}
+              onClick={()=>!dragging&&onEdit(c)}
+              style={{opacity:dragging?.id===c.id?.35:1,cursor:"grab",transition:"opacity .15s, transform .15s",
+                transform:dragging?.id===c.id?"scale(.97)":undefined}}>
+              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:6,marginBottom:4}}>
+                <div style={{fontFamily:"Georgia,serif",fontSize:15,color:C.textPrimary}}>{c.name||<span style={{color:C.textLight,fontStyle:"italic"}}>No name</span>}</div>
+                <span style={{fontSize:12,color:C.textLight,cursor:"grab",flexShrink:0}} title="Drag to move">⠿</span>
+              </div>
+              <div style={{fontSize:12,color:C.blue25,fontStyle:"italic",fontFamily:"Georgia,serif",marginBottom:(c.notes||c.linkedId)?8:4}}>
+                {c.organization?`${c.organization} — `:""}{c.calling}
+              </div>
+              {c.linkedId&&<div style={{fontSize:10,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",marginBottom:4}}>🔗 Linked card</div>}
+              {c.notes&&<div style={{fontSize:11,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",paddingTop:6,borderTop:`1px solid ${C.borderLight}`,lineHeight:1.5,marginBottom:6}}>{c.notes}</div>}
+              {isFinalizeStage&&onFinalize&&(
+                <button onClick={e=>{e.stopPropagation();onFinalize(c);}}
+                  style={{width:"100%",marginBottom:6,padding:"5px 10px",background:"#206B3F",
+                    border:"none",borderRadius:6,color:"#fff",fontSize:11,fontWeight:700,
+                    fontFamily:"'Helvetica Neue',Arial,sans-serif",cursor:"pointer",
+                    display:"flex",alignItems:"center",justifyContent:"center",gap:4}}
+                  onMouseEnter={e=>e.currentTarget.style.background="#195934"}
+                  onMouseLeave={e=>e.currentTarget.style.background="#206B3F"}>
+                  ✓ Finalize
+                </button>
+              )}
+              <div style={{display:"flex",gap:4,justifyContent:"space-between",alignItems:"center",marginTop:4}}>
+                <div style={{display:"flex",gap:4}}>
+                  <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id,-1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move left"><ChevLeftIcon/></button>
+                  <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id, 1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move right"><ChevRightIcon/></button>
+                </div>
+                <button onClick={e=>{e.stopPropagation();onDel(c.id);}}
+                  style={{background:"none",border:`1px solid ${C.borderLight}`,borderRadius:5,width:26,height:26,cursor:"pointer",color:C.textLight,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=C.red15;e.currentTarget.style.color=C.red15;}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor=C.borderLight;e.currentTarget.style.color=C.textLight;}}>
+                  <X size={11}/>
+                </button>
+              </div>
+            </div>
+          ))}
+          {!items.length&&(
+            <div style={{textAlign:"center",padding:"22px 12px",
+              color:isOver&&!isDragSource?st.text||C.textMuted:C.textLight,
+              fontFamily:"Georgia,serif",fontStyle:"italic",fontSize:13,borderRadius:8,transition:"all .15s",
+              border:isOver&&!isDragSource?`1.5px dashed ${st.border||C.border}`:"1.5px dashed transparent",
+              background:isOver&&!isDragSource?st.bg:undefined}}>
+              {isOver&&!isDragSource?"Drop here":"Empty"}
+            </div>
+          )}
+        </div>
+      );
+    })}
+  </div>;
+}
+
+function CallingsPipelinePage({
+  mode,  // "callings" | "releasings"
+  callings,setCallings,callRef,
+  releasings,setReleasings,relRef,
+  apptRef,callingsRoster,
+  rosterError,onRefreshRoster,
+  onMutateCallings,onMutateReleasings,onMutateBoth,
+  autoCreateAppointments,
+}){
+  const[showCallingForm,setShowCallingForm]=useState(false);
+  const[editingCalling,setEditingCalling]=useState(null);
+  const[showReleasingForm,setShowReleasingForm]=useState(false);
+  const[editingReleasing,setEditingReleasing]=useState(null);
+  const[callingSearch,setCallingSearch]=useState("");
+  const[releasingSearch,setReleasingSearch]=useState("");
+
+  const filteredCallings  =callings.filter(c=>c.name.toLowerCase().includes(callingSearch.toLowerCase())||(c.calling||"").toLowerCase().includes(callingSearch.toLowerCase()));
+  const filteredReleasings=releasings.filter(r=>r.name.toLowerCase().includes(releasingSearch.toLowerCase())||(r.calling||"").toLowerCase().includes(releasingSearch.toLowerCase()));
+
+  // ── Callings CRUD ──
+  const saveCalling=(item)=>{
+    const isNew=!item.id;
+    const newId=`c_${Date.now()}`;
+    const newItem=isNew?{...item,id:newId}:item;
+    const updated=isNew?[...callings,newItem]:callings.map(x=>x.id===item.id?item:x);
+
+    // Auto-create linked releasing when filling an occupied position
+    if(isNew&&item.currentHolder&&!item.currentHolder.toLowerCase().includes("vacant")){
+      const relId=`r_${Date.now()}`;
+      const linkedRel={
+        id:relId,name:item.currentHolder,
+        calling:item.calling,organization:item.organization||"",
+        rosterRowIndex:item.rosterRowIndex||null,
+        stage:"Discuss",notes:`Releasing linked to calling of ${item.name||"new member"}`,
+        linkedId:newId,positionHandedOff:false,
+      };
+      const callWithLink=updated.map(x=>x.id===newId?{...x,linkedId:relId}:x);
+      const updatedRel=[...releasings,linkedRel];
+      callRef.current=callWithLink;relRef.current=updatedRel;
+      setCallings(callWithLink);setReleasings(updatedRel);
+      // Single combined save — avoids pipelineDirty race between two separate pushAll calls
+      if(onMutateBoth) onMutateBoth(callWithLink,updatedRel);
+      else { onMutateCallings(callWithLink);onMutateReleasings(updatedRel); }
+      notify.success(`Releasing card created for ${item.currentHolder} — check the Releasings tab`,6000);
+    } else {
+      callRef.current=updated;setCallings(updated);onMutateCallings(updated);
+    }
+    setShowCallingForm(false);setEditingCalling(null);
+    autoCreateAppointments(apptRef.current||[],callRef.current,relRef.current||[]);
+    notify.success(isNew?"Calling added":"Calling updated");
+  };
+
+  const deleteCalling=(id)=>{
+    const updated=callings.filter(x=>x.id!==id);
+    callRef.current=updated;setCallings(updated);onMutateCallings(updated);
+    notify.info("Calling removed");
+  };
+
+  const setCallingStage=(id,stage)=>{
+    const updated=callings.map(x=>x.id===id?{...x,stage}:x);
+    callRef.current=updated;setCallings(updated);onMutateCallings(updated);
+    autoCreateAppointments(apptRef.current||[],updated,relRef.current||[]);
+  };
+
+  const moveCallingStage=(id,dir)=>{
+    const updated=callings.map(x=>{
+      if(x.id!==id)return x;
+      const i=CALLING_STAGES.indexOf(x.stage);
+      return CALLING_STAGES[i+dir]?{...x,stage:CALLING_STAGES[i+dir]}:x;
+    });
+    callRef.current=updated;setCallings(updated);onMutateCallings(updated);
+  };
+
+  const finalizeCalling=async(callingCard)=>{
+    const today=new Date().toISOString().slice(0,10);
+    if(callingCard.isNewCalling){
+      // Brand-new position — append a new row to the roster
+      try{
+        const{appendCallingsRosterRow}=await import("./sheets");
+        await appendCallingsRosterRow({organization:callingCard.organization||callingCard.newOrg||"",calling:callingCard.calling,name:callingCard.name});
+        notify.success(`New calling added to roster: ${callingCard.name} → ${callingCard.calling}`);
+      }catch(e){notify.error("Failed to add to roster: "+e.message);}
+    } else if(callingCard.rosterRowIndex){
+      try{
+        const{pushCallingsRosterRow}=await import("./sheets");
+        await pushCallingsRosterRow(callingCard.rosterRowIndex,{name:callingCard.name,sustained:today,setApart:today});
+        notify.success(`Roster updated: ${callingCard.name} → ${callingCard.calling}`);
+      }catch(e){notify.error("Failed to update roster: "+e.message);}
+    }
+    if(callingCard.linkedId){
+      const updatedRel=releasings.map(r=>r.id===callingCard.linkedId?{...r,positionHandedOff:true}:r);
+      relRef.current=updatedRel;setReleasings(updatedRel);onMutateReleasings(updatedRel);
+    }
+    const updated=callings.filter(x=>x.id!==callingCard.id);
+    callRef.current=updated;setCallings(updated);onMutateCallings(updated);
+    notify.success(`${callingCard.name} calling finalized`);
+  };
+
+  // ── Releasings CRUD ──
+  const saveReleasing=(item)=>{
+    const isNew=!item.id;
+    const updated=isNew?[...releasings,{...item,id:`r_${Date.now()}`}]:releasings.map(x=>x.id===item.id?item:x);
+    relRef.current=updated;setReleasings(updated);onMutateReleasings(updated);
+    setShowReleasingForm(false);setEditingReleasing(null);
+    autoCreateAppointments(apptRef.current||[],callRef.current||[],updated);
+    notify.success(isNew?"Releasing added":"Releasing updated");
+  };
+
+  const deleteReleasing=(id)=>{
+    const updated=releasings.filter(x=>x.id!==id);
+    relRef.current=updated;setReleasings(updated);onMutateReleasings(updated);
+    notify.info("Releasing removed");
+  };
+
+  const setReleasingStage=(id,stage)=>{
+    const updated=releasings.map(x=>x.id===id?{...x,stage}:x);
+    relRef.current=updated;setReleasings(updated);onMutateReleasings(updated);
+    autoCreateAppointments(apptRef.current||[],callRef.current||[],updated);
+  };
+
+  const moveReleasingStage=(id,dir)=>{
+    const updated=releasings.map(x=>{
+      if(x.id!==id)return x;
+      const i=RELEASING_STAGES.indexOf(x.stage);
+      return RELEASING_STAGES[i+dir]?{...x,stage:RELEASING_STAGES[i+dir]}:x;
+    });
+    relRef.current=updated;setReleasings(updated);onMutateReleasings(updated);
+  };
+
+  const finalizeReleasing=async(relCard)=>{
+    if(!relCard.positionHandedOff&&relCard.rosterRowIndex){
+      try{
+        const{pushCallingsRosterRow}=await import("./sheets");
+        await pushCallingsRosterRow(relCard.rosterRowIndex,{name:"Calling Vacant",sustained:"",setApart:""});
+        notify.success(`Roster updated: ${relCard.calling} marked vacant`);
+      }catch(e){notify.error("Failed to update roster: "+e.message);}
+    }
+    const updated=releasings.filter(x=>x.id!==relCard.id);
+    relRef.current=updated;setReleasings(updated);onMutateReleasings(updated);
+    notify.success(`${relCard.name} released`);
+  };
+
+  const callingCounts  =CALLING_STAGES.reduce((a,s)=>({...a,[s]:callings.filter(x=>x.stage===s).length}),{});
+  const releasingCounts=RELEASING_STAGES.reduce((a,s)=>({...a,[s]:releasings.filter(x=>x.stage===s).length}),{});
+
+  const showCallings  = mode==="callings";
+  const showReleasings= mode==="releasings";
+
+  return(
+    <div className="animate-in">
+
+      {/* ── Roster status banner (callings tab only) ── */}
+      {showCallings&&(
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,padding:"8px 12px",
+          borderRadius:8,fontSize:12,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+          background: rosterError ? "#FFF0F0" : callingsRoster.length===0 ? "#FEF3E2" : "#EAF4EA",
+          border: `1px solid ${rosterError ? "#F5A0A0" : callingsRoster.length===0 ? "#F68D2E" : "#7DBE72"}`,
+          color: rosterError ? "#8B0000" : callingsRoster.length===0 ? "#974A07" : "#206B3F"}}>
+          <span style={{flex:1}}>
+            {rosterError
+              ? `⚠ Roster not loaded: ${rosterError}`
+              : callingsRoster.length===0
+                ? "⚠ Roster loaded 0 positions — the callings sheet may not be shared with the service account"
+                : `✓ ${callingsRoster.length} positions loaded from callings sheet`}
+          </span>
+          <button onClick={onRefreshRoster}
+            style={{background:"none",border:`1px solid currentColor`,borderRadius:5,
+              padding:"3px 10px",fontSize:11,cursor:"pointer",color:"inherit",fontFamily:"'Helvetica Neue',Arial,sans-serif",fontWeight:600,whiteSpace:"nowrap"}}>
+            Refresh
+          </button>
+        </div>
+      )}
+
+      {/* ── Callings Section ── */}
+      {showCallings&&<>
+        <HeroBanner title="Callings" sub={`${callings.length} active calling${callings.length===1?"":"s"}`}>
+          <button className="btn-primary" style={{background:"rgba(255,255,255,.18)",border:"1.5px solid rgba(255,255,255,.4)"}}
+            onClick={()=>{setEditingCalling(null);setShowCallingForm(true);}}>
+            <PlusIcon/> New Calling
+          </button>
+        </HeroBanner>
+
+        <div style={{display:"flex",gap:3,height:6,borderRadius:4,overflow:"hidden",marginBottom:12,marginTop:4}}>
+          {CALLING_STAGES.map(s=>{const st=PIPELINE_STAGE_STYLE[s]||{};return<div key={s} style={{flex:Math.max(callingCounts[s]||0,.3),background:st.border||C.border,transition:"flex .5s",minWidth:4}}/>;})}</div>
+        <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+          {CALLING_STAGES.map(s=>{const st=PIPELINE_STAGE_STYLE[s]||{};return(
+            <div key={s} style={{display:"flex",alignItems:"center",gap:5}}>
+              <span style={{width:7,height:7,borderRadius:"50%",background:st.dot||C.textMuted,flexShrink:0}}/>
+              <span style={{fontSize:11,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textSecond}}>{s}</span>
+              <span style={{fontSize:11,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>({callingCounts[s]||0})</span>
+            </div>
+          );})}
+        </div>
+        <div style={{marginBottom:14}}>
+          <input value={callingSearch} onChange={e=>setCallingSearch(e.target.value)} placeholder="Search callings…" style={{maxWidth:300}}/>
+        </div>
+        <CallingKanban data={filteredCallings} stages={CALLING_STAGES}
+          onEdit={c=>{setEditingCalling(c);setShowCallingForm(true);}}
+          onMove={moveCallingStage}
+          onStageChange={(id,stage)=>{setCallingStage(id,stage);notify.success("Stage updated");}}
+          onDel={deleteCalling} onFinalize={finalizeCalling} finalizeStage="Set Apart"/>
+      </>}
+
+      {/* ── Releasings Section ── */}
+      {showReleasings&&<>
+        <HeroBanner title="Releasings" sub={`${releasings.length} active releasing${releasings.length===1?"":"s"}`}>
+          <button className="btn-primary" style={{background:"rgba(255,255,255,.18)",border:"1.5px solid rgba(255,255,255,.4)"}}
+            onClick={()=>{setEditingReleasing(null);setShowReleasingForm(true);}}>
+            <PlusIcon/> New Releasing
+          </button>
+        </HeroBanner>
+        <div style={{display:"flex",gap:3,height:6,borderRadius:4,overflow:"hidden",marginBottom:12,marginTop:4}}>
+          {RELEASING_STAGES.map(s=>{const st=PIPELINE_STAGE_STYLE[s]||{};return<div key={s} style={{flex:Math.max(releasingCounts[s]||0,.3),background:st.border||C.border,transition:"flex .5s",minWidth:4}}/>;})}</div>
+        <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+          {RELEASING_STAGES.map(s=>{const st=PIPELINE_STAGE_STYLE[s]||{};return(
+            <div key={s} style={{display:"flex",alignItems:"center",gap:5}}>
+              <span style={{width:7,height:7,borderRadius:"50%",background:st.dot||C.textMuted,flexShrink:0}}/>
+              <span style={{fontSize:11,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textSecond}}>{s}</span>
+              <span style={{fontSize:11,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textMuted}}>({releasingCounts[s]||0})</span>
+            </div>
+          );})}
+        </div>
+        <div style={{marginBottom:14}}>
+          <input value={releasingSearch} onChange={e=>setReleasingSearch(e.target.value)} placeholder="Search releasings…" style={{maxWidth:300}}/>
+        </div>
+        <CallingKanban data={filteredReleasings} stages={RELEASING_STAGES}
+          onEdit={r=>{setEditingReleasing(r);setShowReleasingForm(true);}}
+          onMove={moveReleasingStage}
+          onStageChange={(id,stage)=>{setReleasingStage(id,stage);notify.success("Stage updated");}}
+          onDel={deleteReleasing} onFinalize={finalizeReleasing} finalizeStage="Released"/>
+      </>}
+
+      {showCallingForm&&<CallingCardModal item={editingCalling} callingsRoster={callingsRoster} stages={CALLING_STAGES}
+        onSave={saveCalling} onDelete={editingCalling?deleteCalling:null} onClose={()=>{setShowCallingForm(false);setEditingCalling(null);}}/>}
+      {showReleasingForm&&<ReleasingCardModal item={editingReleasing} callingsRoster={callingsRoster} stages={RELEASING_STAGES}
+        onSave={saveReleasing} onDelete={editingReleasing?deleteReleasing:null} onClose={()=>{setShowReleasingForm(false);setEditingReleasing(null);}}/>}
+    </div>
+  );
 }
 
 // ─── Pipeline Tab (Callings & Releasings) ────────────────────────────────────
@@ -1913,6 +2563,34 @@ function toDisplayDate(dateStr) {
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+// Convert "HH:MM" (24h) to "h:MM AM/PM" for display and sheet storage
+function to12h(t) {
+  if (!t) return "";
+  if (/[AP]M$/i.test(t)) return t; // already 12h
+  const m = t.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return t;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = h < 12 ? "AM" : "PM";
+  h = h % 12 || 12;
+  return `${h}:${min} ${ampm}`;
+}
+
+// Convert "h:MM AM/PM" or "HH:MM" to "HH:MM" for <input type="time"> and sort keys
+function to24h(t) {
+  if (!t) return "";
+  if (/^\d{2}:\d{2}$/.test(t)) return t; // already HH:MM
+  if (/^\d:\d{2}$/.test(t)) return `0${t}`; // H:MM → HH:MM
+  const m = t.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return t;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = m[3].toUpperCase();
+  if (ampm === "PM" && h !== 12) h += 12;
+  if (ampm === "AM" && h === 12) h = 0;
+  return `${String(h).padStart(2, "0")}:${min}`;
+}
+
 // Template items in order — itemKey is stable identifier used in sheet
 const BM_TEMPLATE = [
   { itemKey: "prayer_list",      section: "Opening",   label: "Review Prayer List",      hasAssignee: false, isStatic: true,  isPrayerList: true },
@@ -1950,7 +2628,7 @@ function buildBMAgendaLines(bmData, date, callings, releasings, sacramentProgram
   const val    = (v) => (v && v !== "_unassigned_") ? v : "—";
   const assign = (label, value) => `  ${label}: ${val(value)}`;
   const topic  = (t) => t.done ? `  ✓ ${t.notes||t.customLabel||t.label}` : `  — ${t.notes||t.customLabel||t.label}`;
-  const task   = (t) => t.done ? `  ✓ ${t.customLabel||t.label} (${t.assignee||"unassigned"})` : `  — ${t.customLabel||t.label} (${t.assignee||"unassigned"})`;
+  const task   = (t) => t.done ? `  ✓ ${t.notes||t.customLabel||t.label} (${t.assignee||"unassigned"})` : `  — ${t.notes||t.customLabel||t.label} (${t.assignee||"unassigned"})`;
   const openingSongLine = `  Opening Song: ${(songRow?.assignee && songRow.assignee !== "_unassigned_") ? songRow.assignee : "—"}`;
 
   const dayData     = bmData.filter(r => r.date === date);
@@ -2016,7 +2694,7 @@ function buildWCAgendaLines(wcData, date, spiritLabel, getItem, sLabel, divider)
   const val    = (v) => (v && v !== "_unassigned_") ? v : "—";
   const assign = (label, value) => `  ${label}: ${val(value)}`;
   const topic  = (t) => t.done ? `  ✓ ${t.notes||t.customLabel||t.label}` : `  — ${t.notes||t.customLabel||t.label}`;
-  const task   = (t) => t.done ? `  ✓ ${t.customLabel||t.label} (${t.assignee||"unassigned"})` : `  — ${t.customLabel||t.label} (${t.assignee||"unassigned"})`;
+  const task   = (t) => t.done ? `  ✓ ${t.notes||t.customLabel||t.label} (${t.assignee||"unassigned"})` : `  — ${t.notes||t.customLabel||t.label} (${t.assignee||"unassigned"})`;
   const songRow = getItem("opening_song");
   const songNum = songRow?.notes || "";
   const songTitle = songRow?.customLabel || "";
@@ -2242,7 +2920,25 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
       customLabel: "",
       spiritToggle: t.itemKey === "spirit_thought" ? (isEvenWeek ? "handbook_review" : "spiritual_thought") : "",
     }));
-    const newData = [...bmData.filter(r => r.date !== selectedDate), ...rows];
+
+    // Find the most recent prior meeting date that has data
+    const priorDate = [...new Set(bmData.map(r => r.date).filter(Boolean))]
+      .filter(d => d < selectedDate)
+      .sort()
+      .reverse()[0];
+
+    // Carry forward incomplete topics and tasks from that prior meeting
+    const carried = priorDate
+      ? bmData
+          .filter(r =>
+            r.date === priorDate &&
+            !r.done &&
+            (r.itemKey.startsWith("topic_") || r.itemKey.startsWith("task_"))
+          )
+          .map(r => ({ ...r, date: selectedDate, id: `bm_carried_${r.itemKey}` }))
+      : [];
+
+    const newData = [...bmData.filter(r => r.date !== selectedDate), ...rows, ...carried];
     setBmData(newData);
     setBishopricMeeting(newData);
   };
@@ -2392,6 +3088,32 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
     onApply:  (remote) => { setBmData(remote); setBishopricMeeting(remote); },
     enabled:  true,
   });
+
+  // Auto carry-forward: when switching to a date that already has an agenda,
+  // inject any incomplete tasks/topics from the most recent prior meeting
+  // that aren't already present. Fires on date change and on initial data load.
+  const carriedBMDatesRef = useRef(new Set());
+  useEffect(() => {
+    if (!hasData) return; // no agenda yet — createProgram handles carry-forward on creation
+    if (carriedBMDatesRef.current.has(selectedDate)) return;
+    carriedBMDatesRef.current.add(selectedDate);
+    const data = bmDataRef.current;
+    const priorDate = [...new Set(data.map(r => r.date).filter(Boolean))]
+      .filter(d => d < selectedDate).sort().reverse()[0];
+    if (!priorDate) return;
+    const currentKeys = new Set(data.filter(r => r.date === selectedDate).map(r => r.itemKey));
+    const toCarry = data.filter(r =>
+      r.date === priorDate && !r.done &&
+      (r.itemKey.startsWith("topic_") || r.itemKey.startsWith("task_")) &&
+      !currentKeys.has(r.itemKey)
+    );
+    if (toCarry.length === 0) return;
+    const carried = toCarry.map(r => ({ ...r, date: selectedDate, id: `bm_carried_${r.itemKey}` }));
+    const newData = [...data, ...carried];
+    setBmData(newData);
+    setBishopricMeeting(newData);
+    carried.forEach(r => bmMarkDirty(`${selectedDate}|${r.itemKey}`));
+  }, [selectedDate, hasData]); // eslint-disable-line
 
   // Send to Slack
   // Build message lines and open preview modal
@@ -2839,7 +3561,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
                                 return (
                                   <div key={ev.id} style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
                                     <span style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 700, color: C.blue25, flexShrink: 0, minWidth: 90 }}>{dayLabel}</span>
-                                    {ev.time && <span style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: C.textMuted, flexShrink: 0 }}>{ev.time}</span>}
+                                    {ev.time && <span style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: C.textMuted, flexShrink: 0 }}>{to12h(ev.time)}</span>}
                                     <span style={{ fontSize: 13, fontFamily: "Georgia,serif", color: C.textPrimary }}>{ev.event}</span>
                                   </div>
                                 );
@@ -3236,7 +3958,10 @@ function CalendarTab({ calendar, setCalendar, token, isMobile=false, onSaveStart
     try {
       const { pushCalendar } = await import("./sheets");
       if(onSaveStart) onSaveStart();
-      try { await pushCalendar(data); notify.success("Calendar saved"); }
+      // Normalize times to 12h AM/PM before writing (sheets.js does the same,
+      // but doing it here avoids issues with the dynamic-import chunk being cached)
+      const toWrite = data.map(e => ({ ...e, time: to12h(e.time || "") }));
+      try { await pushCalendar(toWrite); notify.success("Calendar saved"); }
       finally { if(onSaveEnd) onSaveEnd(); }
     } catch(e) {
       notify.error("Save failed: " + e.message);
@@ -3359,7 +4084,7 @@ function CalendarTab({ calendar, setCalendar, token, isMobile=false, onSaveStart
                   </div>
                   {evs.slice(0, 3).map((ev, i) => (
                     <div key={ev.id} style={{ fontSize: 10, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 600, background: C.blue25, color: "#fff", borderRadius: 3, padding: "1px 5px", marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {ev.time ? `${ev.time} ` : ""}{ev.event}
+                      {ev.time ? `${to12h(ev.time)} ` : ""}{ev.event}
                     </div>
                   ))}
                   {evs.length > 3 && (
@@ -3390,7 +4115,7 @@ function CalendarTab({ calendar, setCalendar, token, isMobile=false, onSaveStart
                 selectedEvents.map(ev => (
                   <div key={ev.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${C.borderLight}`, display: "flex", alignItems: "flex-start", gap: 10 }}>
                     <div style={{ flex: 1 }}>
-                      {ev.time && <div style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: C.blue25, fontWeight: 700, marginBottom: 2 }}>{ev.time}</div>}
+                      {ev.time && <div style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: C.blue25, fontWeight: 700, marginBottom: 2 }}>{to12h(ev.time)}</div>}
                       <div style={{ fontSize: 14, fontFamily: "Georgia,serif", color: C.textPrimary }}>{ev.event}</div>
                     </div>
                     <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
@@ -3429,7 +4154,7 @@ function CalendarTab({ calendar, setCalendar, token, isMobile=false, onSaveStart
                       </div>
                     </div>
                     <div style={{ flex: 1, paddingTop: 2 }}>
-                      {ev.time && <div style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: C.blue25, fontWeight: 700, marginBottom: 1 }}>{ev.time}</div>}
+                      {ev.time && <div style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: C.blue25, fontWeight: 700, marginBottom: 1 }}>{to12h(ev.time)}</div>}
                       <div style={{ fontSize: 13, fontFamily: "Georgia,serif", color: C.textPrimary }}>{ev.event}</div>
                     </div>
                   </div>
@@ -3463,7 +4188,7 @@ function CalendarEventModal({ event, saving, onSave, onClose }) {
   const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; })();
   const [f, setF] = useState({
     date:  event?.date  || "",
-    time:  event?.time  || "",
+    time:  to24h(event?.time || ""), // normalize to HH:MM for <input type="time">
     event: event?.event || "",
   });
   const s = (k, v) => setF(p => ({ ...p, [k]: v }));
@@ -3715,6 +4440,32 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     enabled:  true,
   });
 
+  // Auto carry-forward: when switching to a date that already has an agenda,
+  // inject any incomplete tasks/topics from the most recent prior meeting
+  // that aren't already present. Fires on date change and on initial data load.
+  const carriedWCDatesRef = useRef(new Set());
+  useEffect(() => {
+    if (!hasData) return;
+    if (carriedWCDatesRef.current.has(selectedDate)) return;
+    carriedWCDatesRef.current.add(selectedDate);
+    const data = wcDataRef.current;
+    const priorDate = [...new Set(data.map(r => r.date).filter(Boolean))]
+      .filter(d => d < selectedDate).sort().reverse()[0];
+    if (!priorDate) return;
+    const currentKeys = new Set(data.filter(r => r.date === selectedDate).map(r => r.itemKey));
+    const toCarry = data.filter(r =>
+      r.date === priorDate && !r.done &&
+      (r.itemKey.startsWith("topic_") || r.itemKey.startsWith("task_")) &&
+      !currentKeys.has(r.itemKey)
+    );
+    if (toCarry.length === 0) return;
+    const carried = toCarry.map(r => ({ ...r, date: selectedDate, id: `wc_carried_${r.itemKey}` }));
+    const newData = [...data, ...carried];
+    setWcData(newData);
+    setWardCouncilMeeting(newData);
+    carried.forEach(r => wcMarkDirty(`${selectedDate}|${r.itemKey}`));
+  }, [selectedDate, hasData]); // eslint-disable-line
+
   const createProgram = () => {
     const rows = WC_TEMPLATE.map(t => ({
       id: `wc_new_${t.itemKey}`,
@@ -3726,7 +4477,22 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
       customLabel: "",
       spiritToggle: t.itemKey === "spirit_thought" ? (isEvenWeek ? "handbook_review" : "spiritual_thought") : "",
     }));
-    const newData = [...wcData.filter(r => r.date !== selectedDate), ...rows];
+
+    // Find the most recent prior meeting date that has data
+    const priorDate = [...new Set(wcData.map(r => r.date).filter(Boolean))]
+      .filter(d => d < selectedDate).sort().reverse()[0];
+
+    // Carry forward incomplete topics and tasks from that prior meeting
+    const carried = priorDate
+      ? wcData
+          .filter(r =>
+            r.date === priorDate && !r.done &&
+            (r.itemKey.startsWith("topic_") || r.itemKey.startsWith("task_"))
+          )
+          .map(r => ({ ...r, date: selectedDate, id: `wc_carried_${r.itemKey}` }))
+      : [];
+
+    const newData = [...wcData.filter(r => r.date !== selectedDate), ...rows, ...carried];
     setWcData(newData);
     setWardCouncilMeeting(newData);
   };
@@ -4072,7 +4838,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
                                 return (
                                   <div key={ev.id} style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
                                     <span style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 700, color: C.blue25, flexShrink: 0, minWidth: 90 }}>{dayLabel}</span>
-                                    {ev.time && <span style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: C.textMuted, flexShrink: 0 }}>{ev.time}</span>}
+                                    {ev.time && <span style={{ fontSize: 11, fontFamily: "'Helvetica Neue',Arial,sans-serif", color: C.textMuted, flexShrink: 0 }}>{to12h(ev.time)}</span>}
                                     <span style={{ fontSize: 13, fontFamily: "Georgia,serif", color: C.textPrimary }}>{ev.event}</span>
                                   </div>
                                 );
@@ -4175,6 +4941,36 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
 
 
 // ─── Unauthorized View ────────────────────────────────────────────────────────
+function PrayersTab() {
+  const PRAYERS = [
+    {
+      title: "Bread Prayer",
+      text: "O God, the Eternal Father, we ask thee in the name of thy Son, Jesus Christ, to bless and sanctify this bread to the souls of all those who partake of it, that they may eat in remembrance of the body of thy Son, and witness unto thee, O God, the Eternal Father, that they are willing to take upon them the name of thy Son, and always remember him and keep his commandments which he has given them; that they may always have his Spirit to be with them. Amen.",
+    },
+    {
+      title: "Water Prayer",
+      text: "O God, the Eternal Father, we ask thee in the name of thy Son, Jesus Christ, to bless and sanctify this water to the souls of all those who drink of it, that they may do it in remembrance of the blood of thy Son, which was shed for them; that they may witness unto thee, O God, the Eternal Father, that they do always remember him, that they may have his Spirit to be with them. Amen.",
+    },
+  ];
+  return (
+    <div style={{ maxWidth: 680, margin: "0 auto", padding: "32px 24px" }}>
+      <div style={{ fontFamily: "Georgia,serif", fontSize: 24, fontWeight: 700, color: C.textPrimary, marginBottom: 28 }}>
+        Sacrament Prayers
+      </div>
+      {PRAYERS.map(p => (
+        <div key={p.title} style={{ background: C.surfaceWhite, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: "28px 32px", marginBottom: 20, boxShadow: "0 2px 8px rgba(0,0,0,.04)" }}>
+          <div style={{ fontFamily: "Georgia,serif", fontSize: 18, fontWeight: 700, color: C.blue35, marginBottom: 16, paddingBottom: 12, borderBottom: `1.5px solid ${C.borderLight}` }}>
+            {p.title}
+          </div>
+          <p style={{ fontFamily: "Georgia,serif", fontSize: 16, lineHeight: 1.8, color: C.textPrimary, margin: 0 }}>
+            {p.text}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function UnauthorizedView(){
   return(
     <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"60vh",gap:16}}>

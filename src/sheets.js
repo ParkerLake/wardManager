@@ -1,5 +1,35 @@
 import config from "./config";
 
+// ── Time format helpers ───────────────────────────────────────────────────────
+// Calendar times are stored in the sheet as "h:MM AM/PM" for readability.
+// Internally (in JS state) we keep "HH:MM" (24h) so lexicographic sorting works.
+
+function timeTo12h(t) {
+  if (!t) return "";
+  if (/[AP]M$/i.test(t)) return t; // already 12h
+  const m = t.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return t;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = h < 12 ? "AM" : "PM";
+  h = h % 12 || 12;
+  return `${h}:${min} ${ampm}`;
+}
+
+function timeTo24h(t) {
+  if (!t) return "";
+  if (/^\d{2}:\d{2}$/.test(t)) return t;            // already HH:MM
+  if (/^\d:\d{2}$/.test(t)) return `0${t}`;         // H:MM → HH:MM
+  const m = t.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return t;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = m[3].toUpperCase();
+  if (ampm === "PM" && h !== 12) h += 12;
+  if (ampm === "AM" && h === 12) h = 0;
+  return `${String(h).padStart(2, "0")}:${min}`;
+}
+
 // ── Worker proxy — all Sheets API calls go through here ──────────────────────
 // The Worker holds the service account key securely server-side.
 // No Google OAuth token needed from the user at all.
@@ -10,6 +40,7 @@ const SID  = () => config.SPREADSHEET_ID;
 const SSID = () => config.SACRAMENT_SHEET_ID;
 const WCID = () => config.WARD_COUNCIL_SHEET_ID;
 const PLID = () => config.PRAYER_LIST_SHEET_ID;
+const CRID = () => config.CALLINGS_ROSTER_SHEET_ID;
 
 async function sheetsReq(sheetId, range, method = "GET", body = null) {
   const params = new URLSearchParams({ spreadsheetId: sheetId, range });
@@ -64,8 +95,11 @@ function rowsToAppointments(rows) {
 
 function callingsToRows(data) {
   return [
-    ["Name", "Calling", "Stage", "Notes"],
-    ...data.map(c => [c.name, c.calling, c.stage, c.notes||""]),
+    ["Name", "Calling", "Stage", "Notes", "Organization", "RosterRowIndex", "LinkedId", "PositionHandedOff"],
+    ...data.map(c => [
+      c.name, c.calling, c.stage, c.notes||"",
+      c.organization||"", c.rosterRowIndex||"", c.linkedId||"", c.positionHandedOff?"true":"false",
+    ]),
   ];
 }
 
@@ -75,7 +109,11 @@ function rowsToCallings(rows) {
     .filter(r => r[0] || r[1])
     .map((r, i) => ({
       id: `c_${i}`, name: r[0]||"", calling: r[1]||"",
-      stage: r[2]||"Proposed", notes: r[3]||"",
+      stage: r[2]||"Discuss", notes: r[3]||"",
+      organization: r[4]||"",
+      rosterRowIndex: r[5] ? parseInt(r[5]) : null,
+      linkedId: r[6]||null,
+      positionHandedOff: r[7] === "true",
     }));
 }
 
@@ -153,8 +191,8 @@ function rowsToLinks(rows) {
 export async function pullAll() {
   const [appts, callings, releasings, members, meeting] = await Promise.all([
     bishopricReq("Appointments!A:F").then(r => rowsToAppointments(r.values)),
-    bishopricReq("Callings!A:D").then(r => rowsToCallings(r.values)),
-    bishopricReq("Releasings!A:D").then(r => rowsToCallings(r.values)),
+    bishopricReq("Callings!A:H").then(r => rowsToCallings(r.values)),
+    bishopricReq("Releasings!A:H").then(r => rowsToCallings(r.values)),
     bishopricReq("Notes!A:E").then(r => rowsToNotes(r.values)),
     bishopricReq("BishopricMeeting!A:H").then(r => rowsToMeeting(r.values)),
   ]);
@@ -207,8 +245,8 @@ export async function pullWardCouncilLinks() {
 export async function sheetsLightPull() {
   const [appts, callings, releasings] = await Promise.all([
     bishopricReq("Appointments!A:F").then(r => rowsToAppointments(r.values)),
-    bishopricReq("Callings!A:D").then(r => rowsToCallings(r.values)),
-    bishopricReq("Releasings!A:D").then(r => rowsToCallings(r.values)),
+    bishopricReq("Callings!A:H").then(r => rowsToCallings(r.values)),
+    bishopricReq("Releasings!A:H").then(r => rowsToCallings(r.values)),
   ]);
   return { appointments: appts, callings, releasings };
 }
@@ -219,8 +257,8 @@ export async function pushAll({ appointments, callings, releasings, members }) {
   const sid = SID();
   const ops = [
     clearAndWrite(sid, "Appointments!A:F", appointmentsToRows(appointments)),
-    clearAndWrite(sid, "Callings!A:D",     callingsToRows(callings)),
-    clearAndWrite(sid, "Releasings!A:D",   callingsToRows(releasings)),
+    clearAndWrite(sid, "Callings!A:H",     callingsToRows(callings)),
+    clearAndWrite(sid, "Releasings!A:H",   callingsToRows(releasings)),
   ];
   if (members !== undefined) {
     ops.push(clearAndWrite(sid, "Notes!A:E", notesToRows(members)));
@@ -394,7 +432,8 @@ export async function pullCalendar() {
   if (!r.values || r.values.length < 2) return { calendar: [] };
   return {
     calendar: r.values.slice(1).filter(r => r[0]).map((r, i) => ({
-      id: `cal_${i}`, date: r[0]||"", time: r[1]||"",
+      id: `cal_${i}`, date: r[0]||"",
+      time: timeTo24h(r[1]||""), // normalize to HH:MM for sorting
       event: r[2]||"", location: r[3]||"", notes: r[4]||"",
     })),
   };
@@ -403,7 +442,7 @@ export async function pullCalendar() {
 export async function pushCalendar(data) {
   const values = [
     ["Date", "Time", "Event", "Location", "Notes"],
-    ...data.map(e => [e.date||"", e.time||"", e.event||"", e.location||"", e.notes||""]),
+    ...data.map(e => [e.date||"", timeTo12h(e.time||""), e.event||"", e.location||"", e.notes||""]),
   ];
   await clearAndWrite(WCID(), "Calendar!A:E", values);
 }
@@ -459,7 +498,12 @@ export async function pushRoster(data) {
     ["Role", "Name"],
     ...data.map(r => [r.role||"", r.name||""]),
   ];
-  await clearAndWrite(SID(), "Roster!A:B", values);
+  // Write to both the Bishopric sheet (SID) and Ward Council sheet (WCID).
+  // Both are read on pull; writing only to one means the other overwrites it.
+  await Promise.all([
+    clearAndWrite(SID(),  "Roster!A:B", values),
+    clearAndWrite(WCID(), "Roster!A:B", values),
+  ]);
 }
 
 // ── Aliases for backward compatibility ───────────────────────────────────────
@@ -494,6 +538,56 @@ export async function pullPrayerList() {
     console.error("pullPrayerList error:", e);
     return [];
   }
+}
+
+// ── Callings Roster (external callings tracking sheet) ────────────────────────
+// Sheet columns: Organization | Calling | Name | Sustained | Set Apart
+// Share this sheet with the service account to enable read/write.
+export async function pullCallingsRoster() {
+  const id = CRID();
+  if (!id || id.includes("YOUR_")) return { callingsRoster: [], rosterError: "No callings sheet ID configured" };
+  try {
+    const r = await sheetsReq(id, "A:E");
+    if (!r.values || r.values.length < 2) return { callingsRoster: [], rosterError: "Sheet returned no rows — check that the sheet is shared with the service account and has data in columns A–E" };
+    const isVacantName = (n) => !n || n.toLowerCase().includes("vacant");
+    const callingsRoster = r.values.slice(1)
+      .filter(row => row[0] || row[1])
+      .map((row, i) => ({
+        rowIndex: i + 2,          // 1-based sheet row (row 1 = header)
+        organization: row[0]||"",
+        calling: row[1]||"",
+        name: row[2]||"",
+        sustained: row[3]||"",
+        setApart: row[4]||"",
+        isVacant: isVacantName(row[2]),
+      }));
+    return { callingsRoster, rosterError: null };
+  } catch(e) {
+    console.error("pullCallingsRoster error:", e);
+    return { callingsRoster: [], rosterError: e.message || "Failed to load roster" };
+  }
+}
+
+// Update Name, Sustained, Set Apart for a single row in the callings roster.
+// rowIndex is 1-based (matches the rowIndex returned by pullCallingsRoster).
+export async function pushCallingsRosterRow(rowIndex, { name, sustained, setApart }) {
+  const id = CRID();
+  if (!id || !rowIndex) throw new Error("No callings roster sheet ID or row index");
+  return sheetsReq(id, `C${rowIndex}:E${rowIndex}`, "PUT", {
+    values: [[name||"", sustained||"", setApart||""]],
+  });
+}
+
+// Append a brand-new row to the callings roster for a new calling position.
+// Reads column A to find the next empty row, then writes the full row.
+export async function appendCallingsRosterRow({ organization, calling, name = "Calling Vacant" }) {
+  const id = CRID();
+  if (!id) throw new Error("No callings roster sheet ID");
+  const r = await sheetsReq(id, "A:A");
+  const nextRow = (r.values?.length || 1) + 1;
+  return sheetsReq(id, `A${nextRow}:E${nextRow}`, "PUT", {
+    values: [[organization||"", calling||"", name, "", ""]],
+  });
 }
 
 // ── Ward Council Roster ───────────────────────────────────────────────────────
