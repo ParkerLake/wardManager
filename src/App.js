@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo, Fragment } from "react";
 import { Plus, X, ChevronUp, ChevronDown, LayoutList, Columns2, GripVertical, Printer, Save,
   User, HandMetal, Music2, Piano, Mic2, Sparkles, Megaphone,
   ClipboardList, Plane, BookOpen, Calendar, Tag, Star,
@@ -13,7 +13,7 @@ import { pullAll, pushAll, pullSacrament, pushSacrament, testConnection } from "
 import config from "./config";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const APPT_STAGES      = ["Need to Schedule","Contacted","Scheduled","Completed"];
+const APPT_STAGES      = ["Need to Schedule","Contacted","Scheduled","Completed","Need Help"];
 const CALLING_STAGES   = ["Discuss","Approved to Call","Accepted","Announce in Sacrament","Sustained","Set Apart"];
 const RELEASING_STAGES = ["Discuss","Approved to Release","Accepted","Announce in Sacrament","Released"];
 const LEADERS          = ["Bishop","1st Counsellor","2nd Counsellor"];
@@ -63,6 +63,7 @@ const APPT_STAGE_STYLE = {
   "Contacted":       { bg:"#E6F4FA",border:"#007DA5",text:"#005581",dot:"#007DA5"},
   "Scheduled":       { bg:"#EAF0F6",border:"#005581",text:"#003057",dot:"#005581"},
   "Completed":       { bg:"#EAF4EA",border:"#50A83E",text:"#206B3F",dot:"#50A83E"},
+  "Need Help":       { bg:"#FDF0F2",border:"#E10F5A",text:"#9A0B3E",dot:"#E10F5A"},
 };
 const PIPELINE_STAGE_STYLE = {
   "Discuss":                  {bg:"#FEF3E2",border:"#F68D2E",text:"#974A07",dot:"#F68D2E"},
@@ -175,6 +176,17 @@ label{font-family:'Helvetica Neue',Arial,sans-serif;font-size:10px;font-weight:7
 .wm-table tbody tr:hover{background:#F0EDE6;}
 .wm-table tbody td{padding:9px 16px;vertical-align:middle;font-size:14px;color:#35383A;}
 tr.row-done td{opacity:.45;}
+tr.row-need-help td{background:rgba(225,15,90,.045);}
+tr.row-need-help:hover td{background:rgba(225,15,90,.08);}
+tr.row-group-header td{background:#F3F1EA;border-bottom:1px solid #E9E6E0;padding-top:7px;padding-bottom:7px;}
+tr.row-group-header:hover td{background:#F3F1EA;}
+tr.row-grouped td:first-child{box-shadow:inset 3px 0 0 #D5CFBE;}
+.group-name-label{font-family:'Helvetica Neue',Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:.04em;color:#53575B;display:flex;align-items:center;gap:6px;}
+.wm-table thead tr.filter-row th{padding:6px 16px 10px;border-bottom:2px solid #D5CFBE;}
+.wm-table th.sortable{cursor:pointer;user-select:none;}
+.wm-table th.sortable:hover{color:#53575B;}
+.filter-input{width:100%;font-size:12px;padding:5px 8px;border-radius:6px;border:1.5px solid #D5CFBE;background:#EFEFE7;font-family:'Helvetica Neue',Arial,sans-serif;color:#35383A;outline:none;transition:border .15s;}
+.filter-input:focus{border-color:#007DA5;background:#fff;}
 .cell-text{cursor:text;display:block;padding:3px 6px;border-radius:4px;
   font-size:14px;color:#35383A;transition:background .1s;min-width:90px;}
 .cell-text:hover{background:#EAE5DC;}
@@ -1433,25 +1445,135 @@ function DateCell({value,onChange}){
   );
 }
 
+const APPT_COLUMNS = [
+  {key:"name",     label:"Member"},
+  {key:"status",   label:"Status"},
+  {key:"owner",    label:"Owner"},
+  {key:"purpose",  label:"Purpose"},
+  {key:"apptDate", label:"Date"},
+  {key:"notes",    label:"Notes"},
+];
+
 function ApptTable({data,onUpd,onDel,roster=[]}){
+  const[filters,setFilters]=useState({name:"",status:"All",owner:"All",purpose:"All",apptDate:"",notes:""});
+  const[sort,setSort]=useState({field:null,dir:"asc"});
+
+  const setFilter=(k,v)=>setFilters(f=>({...f,[k]:v}));
+
+  const filtered=useMemo(()=>data.filter(a=>{
+    if(filters.name&&!(a.name||"").toLowerCase().includes(filters.name.toLowerCase()))return false;
+    if(filters.status!=="All"&&a.status!==filters.status)return false;
+    if(filters.owner!=="All"&&a.owner!==filters.owner)return false;
+    if(filters.purpose!=="All"&&a.purpose!==filters.purpose)return false;
+    if(filters.apptDate&&!(a.apptDate||"").includes(filters.apptDate))return false;
+    if(filters.notes&&!(a.notes||"").toLowerCase().includes(filters.notes.toLowerCase()))return false;
+    return true;
+  }),[data,filters]);
+
+  const compareVal=(a,b,field)=>{
+    if(field==="status"){
+      const ia=APPT_STAGES.indexOf(a.status),ib=APPT_STAGES.indexOf(b.status);
+      return ia-ib;
+    }
+    if(field==="owner"){
+      const ia=LEADERS.indexOf(a.owner),ib=LEADERS.indexOf(b.owner);
+      return ia-ib;
+    }
+    const av=(a[field]||"").toString().toLowerCase(),bv=(b[field]||"").toString().toLowerCase();
+    if(av<bv)return-1;if(av>bv)return 1;return 0;
+  };
+
+  const sorted=useMemo(()=>{
+    if(!sort.field)return filtered;
+    const arr=filtered.slice().sort((a,b)=>{
+      const c=compareVal(a,b,sort.field);
+      return sort.dir==="asc"?c:-c;
+    });
+    return arr;
+  },[filtered,sort]);
+
+  const groups=useMemo(()=>{
+    const map=new Map();
+    sorted.forEach(a=>{
+      const key=(a.name||"").trim()||`__unnamed_${a.id}`;
+      if(!map.has(key))map.set(key,{name:a.name||"",items:[]});
+      map.get(key).items.push(a);
+    });
+    let arr=Array.from(map.values());
+    if(!sort.field)arr.sort((g1,g2)=>(g1.name||"").localeCompare(g2.name||""));
+    return arr;
+  },[sorted,sort]);
+
+  const toggleSort=field=>setSort(s=>s.field===field?{field,dir:s.dir==="asc"?"desc":"asc"}:{field,dir:"asc"});
+
+  const rowFor=(a,extraClass)=>{
+    const cls=[a.status==="Completed"?"row-done":"",a.status==="Need Help"?"row-need-help":"",extraClass||""].filter(Boolean).join(" ");
+    return(
+      <tr key={a.id} className={cls}>
+        <td style={{minWidth:150}}><InlineText serif value={a.name} onChange={v=>onUpd(a.id,"name",v)}/></td>
+        <td style={{minWidth:158}}><StageChip status={a.status} onChange={v=>onUpd(a.id,"status",v)}/></td>
+        <td style={{minWidth:152}}><OwnerChip owner={a.owner} onChange={v=>onUpd(a.id,"owner",v)} roster={roster}/></td>
+        <td style={{minWidth:185}}><PurposeCell value={a.purpose} onChange={v=>onUpd(a.id,"purpose",v)}/></td>
+        <td style={{minWidth:126}}>
+          <DateCell value={a.apptDate} onChange={v=>onUpd(a.id,"apptDate",v)}/>
+        </td>
+        <td style={{minWidth:165}}><InlineText serif value={a.notes} onChange={v=>onUpd(a.id,"notes",v)}/></td>
+        <td style={{width:44,textAlign:"center"}}><button className="btn-del" onClick={()=>onDel(a.id)}><XIcon/></button></td>
+      </tr>
+    );
+  };
+
   return<div style={{overflowX:"auto"}}>
     <table className="wm-table">
-      <thead><tr>{["Member","Status","Owner","Purpose","Date","Notes",""].map(h=><th key={h}>{h}</th>)}</tr></thead>
+      <thead>
+        <tr>
+          {APPT_COLUMNS.map(c=>{
+            const active=sort.field===c.key;
+            return<th key={c.key} className="sortable" onClick={()=>toggleSort(c.key)}>
+              <span style={{display:"inline-flex",alignItems:"center",gap:3}}>
+                {c.label}
+                {active&&(sort.dir==="asc"?<ChevronUp size={11}/>:<ChevronDown size={11}/>)}
+              </span>
+            </th>;
+          })}
+          <th/>
+        </tr>
+        <tr className="filter-row">
+          <th><input className="filter-input" placeholder="Filter…" value={filters.name} onChange={e=>setFilter("name",e.target.value)}/></th>
+          <th>
+            <select className="filter-input" value={filters.status} onChange={e=>setFilter("status",e.target.value)}>
+              <option value="All">All</option>{APPT_STAGES.map(s=><option key={s} value={s}>{s}</option>)}
+            </select>
+          </th>
+          <th>
+            <select className="filter-input" value={filters.owner} onChange={e=>setFilter("owner",e.target.value)}>
+              <option value="All">All</option>{LEADERS.map(l=><option key={l} value={l}>{rosterName(roster,l)}</option>)}
+            </select>
+          </th>
+          <th>
+            <select className="filter-input" value={filters.purpose} onChange={e=>setFilter("purpose",e.target.value)}>
+              <option value="All">All</option>{PURPOSE_OPTIONS.map(p=><option key={p} value={p}>{p}</option>)}
+            </select>
+          </th>
+          <th><input className="filter-input" placeholder="Filter…" value={filters.apptDate} onChange={e=>setFilter("apptDate",e.target.value)}/></th>
+          <th><input className="filter-input" placeholder="Filter…" value={filters.notes} onChange={e=>setFilter("notes",e.target.value)}/></th>
+          <th/>
+        </tr>
+      </thead>
       <tbody>
         {!data.length&&<tr><td colSpan={7}><div style={{textAlign:"center",padding:"60px 24px"}}><div style={{marginBottom:12,opacity:.3,color:C.textMuted,display:"flex",justifyContent:"center"}}><Calendar size={38}/></div><div style={{fontFamily:"Georgia,serif",fontSize:17,color:C.textSecond,marginBottom:5}}>No appointments</div><div style={{fontSize:12,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Add one or adjust filters</div></div></td></tr>}
-        {data.map(a=>(
-          <tr key={a.id} className={a.status==="Completed"?"row-done":""}>
-            <td style={{minWidth:150}}><InlineText serif value={a.name} onChange={v=>onUpd(a.id,"name",v)}/></td>
-            <td style={{minWidth:158}}><StageChip status={a.status} onChange={v=>onUpd(a.id,"status",v)}/></td>
-            <td style={{minWidth:152}}><OwnerChip owner={a.owner} onChange={v=>onUpd(a.id,"owner",v)} roster={roster}/></td>
-            <td style={{minWidth:185}}><PurposeCell value={a.purpose} onChange={v=>onUpd(a.id,"purpose",v)}/></td>
-            <td style={{minWidth:126}}>
-              <DateCell value={a.apptDate} onChange={v=>onUpd(a.id,"apptDate",v)}/>
-            </td>
-            <td style={{minWidth:165}}><InlineText serif value={a.notes} onChange={v=>onUpd(a.id,"notes",v)}/></td>
-            <td style={{width:44,textAlign:"center"}}><button className="btn-del" onClick={()=>onDel(a.id)}><XIcon/></button></td>
-          </tr>
-        ))}
+        {!!data.length&&!sorted.length&&<tr><td colSpan={7}><div style={{textAlign:"center",padding:"60px 24px"}}><div style={{marginBottom:12,opacity:.3,color:C.textMuted,display:"flex",justifyContent:"center"}}><Calendar size={38}/></div><div style={{fontFamily:"Georgia,serif",fontSize:17,color:C.textSecond,marginBottom:5}}>No matches</div><div style={{fontSize:12,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Adjust or clear filters</div></div></td></tr>}
+        {groups.map(g=>{
+          if(g.items.length===1)return rowFor(g.items[0]);
+          return<Fragment key={g.name+"_"+g.items[0].id}>
+            <tr className="row-group-header">
+              <td colSpan={7}>
+                <span className="group-name-label"><Users size={12}/>{g.name||"Unnamed"} <span style={{color:C.textMuted,fontWeight:400}}>· {g.items.length} appointments</span></span>
+              </td>
+            </tr>
+            {g.items.map(a=>rowFor(a,"row-grouped"))}
+          </Fragment>;
+        })}
       </tbody>
     </table>
   </div>;
@@ -6578,9 +6700,9 @@ function SacramentPrintView({ program, date, onClose, narrativeTemplates={}, cal
     const dateLabel = formatSundayLabel(date);
     const wardName  = config.WARD_NAME || "Ward";
     const metaRows  = [
-      ...presidingItems.filter(r => r.value).map(r => `<div>${r.label}: ${r.value}</div>`),
-      ...accompanimentItems.filter(r => r.value).map(r => `<div>${r.label}: ${r.value}</div>`),
-    ].join("");
+      ...presidingItems.filter(r => r.value).map(r => `<span>${r.label}: ${r.value}</span>`),
+      ...accompanimentItems.filter(r => r.value).map(r => `<span>${r.label}: ${r.value}</span>`),
+    ].join(`<span class="sp-meta-sep">·</span>`);
 
     // Expand Announcement items for standard print
     const expandAnnouncementItem = (item) => {
@@ -6706,8 +6828,8 @@ function SacramentPrintView({ program, date, onClose, narrativeTemplates={}, cal
     }).join("");
 
     const metaRows = [
-      ...presidingItems.filter(r=>r.value).map(r=>`<div>${r.label}: ${r.value}</div>`),
-    ].join("");
+      ...presidingItems.filter(r=>r.value).map(r=>`<span>${r.label}: ${r.value}</span>`),
+    ].join(`<span class="sp-meta-sep">·</span>`);
 
     const html = buildNarrativePrintHtml(wardName, dateLabel, metaRows, introText, organistText, narrativeBlocks);
     openPrintWindow(html);
@@ -6769,13 +6891,14 @@ function openPrintWindow(html) {
 const PRINT_SHARED_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  @page { size: letter; margin: 0.4in; }
   body { font-family: 'Crimson Pro', Georgia, serif; color: #222; background: white;
-    padding: 48px 56px; max-width: 680px; margin: 0 auto; }
-  .sp-header { text-align: center; margin-bottom: 28px; padding-bottom: 18px; border-bottom: 2px solid #003057; }
-  .sp-ward { font-size: 11px; font-family: sans-serif; letter-spacing: .12em; text-transform: uppercase; color: #888; margin-bottom: 8px; }
-  .sp-title { font-size: 30px; font-weight: 600; color: #003057; margin-bottom: 4px; }
-  .sp-date { font-size: 16px; color: #555; margin-bottom: 10px; }
-  .sp-meta { font-size: 13px; font-family: sans-serif; color: #666; line-height: 1.9; margin-top: 10px; }
+    padding: 28px 36px; max-width: 680px; margin: 0 auto; }
+  .sp-header { text-align: center; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 2px solid #003057; }
+  .sp-title { font-size: 22px; font-weight: 600; color: #003057; margin-bottom: 3px; }
+  .sp-subline { font-size: 12px; font-family: sans-serif; letter-spacing: .05em; text-transform: uppercase; color: #777; margin-bottom: 6px; }
+  .sp-meta { font-size: 11.5px; font-family: sans-serif; color: #666; display: flex; flex-wrap: wrap; justify-content: center; gap: 3px 8px; }
+  .sp-meta-sep { color: #ccc; }
   .sp-item { display: flex; gap: 20px; padding: 9px 0; border-bottom: 1px solid #f0ede8; align-items: baseline; }
   .sp-label { font-size: 12px; font-family: sans-serif; color: #888; min-width: 140px; flex-shrink: 0; }
   .sp-value-col { flex: 1; }
@@ -6791,13 +6914,34 @@ const PRINT_SHARED_CSS = `
   .btn-close { background: #f0f0f0; color: #333; border: 1px solid #ccc !important; }
   @media print {
     .btn-bar { display: none !important; }
-    @page { margin: 0.5in; }
-    body { padding: 24px 32px; }
     .sp-label { color: #333 !important; font-weight: 600 !important; }
-    .sp-ward  { color: #444 !important; }
+    .sp-subline { color: #444 !important; }
     .sp-meta  { color: #333 !important; }
     .sp-notes { color: #444 !important; }
   }
+`;
+
+// Shrinks #sp-page to guarantee a single 8.5x11 sheet regardless of content length.
+// Runs right before print (button click or Cmd/Ctrl+P) so narrative edits are accounted for.
+// Resets to natural size first, measures, then scales down (floor 0.8) if it would overflow.
+const PRINT_FIT_SCRIPT = `
+  function __fitToPage(){
+    var page = document.getElementById('sp-page');
+    if(!page) return;
+    page.style.zoom = 1;
+    var cs = getComputedStyle(document.body);
+    var padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    var pageHeightPx = 979; // (11in - 0.8in page margins) * 96 CSS px/in
+    var budget = pageHeightPx - padV;
+    var natural = page.scrollHeight;
+    var minZoom = 0.8;
+    if (natural > budget) {
+      var z = Math.max(minZoom, (budget / natural) * 0.985);
+      page.style.zoom = z;
+    }
+  }
+  function __fitAndPrint(){ __fitToPage(); window.print(); }
+  window.addEventListener('beforeprint', __fitToPage);
 `;
 
 function buildPrintHtml(wardName, dateLabel, metaRows, bodyRows) {
@@ -6806,17 +6950,19 @@ function buildPrintHtml(wardName, dateLabel, metaRows, bodyRows) {
   <style>${PRINT_SHARED_CSS}</style>
   </head><body>
   <div class="btn-bar">
-    <button class="btn-print" onclick="window.print()">Print</button>
+    <button class="btn-print" onclick="__fitAndPrint()">Print</button>
     <button class="btn-close" onclick="window.close()">Close</button>
   </div>
-  <div class="sp-header">
-    <div class="sp-ward">${wardName}</div>
-    <div class="sp-title">Sacrament Meeting</div>
-    <div class="sp-date">${dateLabel}</div>
-    ${metaRows ? `<div class="sp-meta">${metaRows}</div>` : ""}
+  <div id="sp-page">
+    <div class="sp-header">
+      <div class="sp-title">Sacrament Meeting</div>
+      <div class="sp-subline">${wardName} · ${dateLabel}</div>
+      ${metaRows ? `<div class="sp-meta">${metaRows}</div>` : ""}
+    </div>
+    ${bodyRows}
+    <div class="sp-footer">The Church of Jesus Christ of Latter-day Saints</div>
   </div>
-  ${bodyRows}
-  <div class="sp-footer">The Church of Jesus Christ of Latter-day Saints</div>
+  <script>${PRINT_FIT_SCRIPT}</script>
   </body></html>`;
 }
 
@@ -6837,20 +6983,21 @@ function buildNarrativePrintHtml(wardName, dateLabel, metaRows, introText, organ
   <style>${PRINT_SHARED_CSS}${narrativeCSS}</style>
   </head><body>
   <div class="btn-bar">
-    <button class="btn-print" onclick="window.print()">Print</button>
+    <button class="btn-print" onclick="__fitAndPrint()">Print</button>
     <button class="btn-close" onclick="window.close()">Close</button>
   </div>
-  <div class="sp-header">
-    <div class="sp-ward">${wardName}</div>
-    <div class="sp-title">Sacrament Meeting</div>
-    <div class="sp-date">${dateLabel}</div>
-    ${metaRows ? `<div class="sp-meta">${metaRows}</div>` : ""}
+  <div id="sp-page">
+    <div class="sp-header">
+      <div class="sp-title">Sacrament Meeting</div>
+      <div class="sp-subline">${wardName} · ${dateLabel}</div>
+      ${metaRows ? `<div class="sp-meta">${metaRows}</div>` : ""}
+    </div>
+    ${introText ? `<div class="narr-intro"><p contenteditable="true">${introText}</p></div>` : ""}
+    ${organistText ? `<div class="narr-intro"><p contenteditable="true">${organistText}</p></div>` : ""}
+    ${narrativeBlocks}
+    <div class="sp-footer">The Church of Jesus Christ of Latter-day Saints</div>
   </div>
-  ${introText ? `<div class="narr-intro"><p contenteditable="true">${introText}</p></div>` : ""}
-  ${organistText ? `<div class="narr-intro"><p contenteditable="true">${organistText}</p></div>` : ""}
-  ${narrativeBlocks}
-  <div class="sp-footer">The Church of Jesus Christ of Latter-day Saints</div>
-
+  <script>${PRINT_FIT_SCRIPT}</script>
   </body></html>`;
 }
 
