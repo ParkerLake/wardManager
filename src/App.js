@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo, Fragment } from "react";
+import { createPortal } from "react-dom";
 import { Plus, X, ChevronUp, ChevronDown, LayoutList, Columns2, GripVertical, Printer, Save,
   User, HandMetal, Music2, Piano, Mic2, Sparkles, Megaphone,
   ClipboardList, Plane, BookOpen, Calendar, Tag, Star,
@@ -932,10 +933,12 @@ function MainApp({ user, token, onSignOut }) {
   // This prevents multi-device race conditions — each pull is atomic.
   const autoCreateAppointments = useCallback(async (freshAppts, freshCallings, freshReleasings) => {
     if (!isAdminRef.current) return;
-    // Check if person already has any non-completed appointment
-    // Matches on name only — if they're already on the board, don't add again
-    const hasAppt = (name) => freshAppts.some(a =>
+    // Check if person already has a non-completed appointment for this specific purpose.
+    // Matches on name + purpose — an unrelated open appointment (e.g. Temple Recommend)
+    // shouldn't block a new Calling/Releasing/Set Apart appointment from being created.
+    const hasAppt = (name, purpose) => freshAppts.some(a =>
       a.name.toLowerCase() === name.toLowerCase() &&
+      a.purpose === purpose &&
       a.status !== "Completed"
     );
 
@@ -945,7 +948,7 @@ function MainApp({ user, token, onSignOut }) {
     freshCallings.forEach(c => {
       if (c.stage !== "Approved to Call" || !c.name) return;
       const key = `${c.name}|Calling|${c.calling}`;
-      if (seen.has(key) || hasAppt(c.name)) return;
+      if (seen.has(key) || hasAppt(c.name, "Calling")) return;
       seen.add(key);
       toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
         name:c.name, status:"Need to Schedule", owner:"Bishop",
@@ -955,7 +958,7 @@ function MainApp({ user, token, onSignOut }) {
     freshReleasings.forEach(r => {
       if (r.stage !== "Approved to Release" || !r.name) return;
       const key = `${r.name}|Releasing|${r.calling}`;
-      if (seen.has(key) || hasAppt(r.name)) return;
+      if (seen.has(key) || hasAppt(r.name, "Releasing")) return;
       seen.add(key);
       toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
         name:r.name, status:"Need to Schedule", owner:"Bishop",
@@ -965,7 +968,7 @@ function MainApp({ user, token, onSignOut }) {
     freshCallings.forEach(c => {
       if (c.stage !== "Sustained" || !c.name) return;
       const key = `${c.name}|Set Apart|${c.calling}`;
-      if (seen.has(key) || hasAppt(c.name)) return;
+      if (seen.has(key) || hasAppt(c.name, "Set Apart")) return;
       seen.add(key);
       toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
         name:c.name, status:"Need to Schedule", owner:"Bishop",
@@ -1346,7 +1349,7 @@ function DateCell({value,onChange}){
   const [open,setOpen]=useState(false);
   const [viewYear,setViewYear]=useState(()=>value?parseInt(value.slice(0,4)):new Date().getFullYear());
   const [viewMonth,setViewMonth]=useState(()=>value?parseInt(value.slice(5,7))-1:new Date().getMonth());
-  const [popPos,setPopPos]=useState({left:0,top:0,bottom:"auto"});
+  const [popPos,setPopPos]=useState({left:0,top:0});
   const anchorRef=useRef(null);
   const popRef=useRef(null);
 
@@ -1368,11 +1371,17 @@ function DateCell({value,onChange}){
   const handleOpen=()=>{
     if(anchorRef.current){
       const r=anchorRef.current.getBoundingClientRect();
-      const goAbove=window.innerHeight-r.bottom<272;
+      const POPUP_H=272,POPUP_W=212,MARGIN=8;
+      const spaceBelow=window.innerHeight-r.bottom;
+      const spaceAbove=r.top;
+      // Prefer opening below the row; only flip above if there's actually more room there.
+      const openBelow=spaceBelow>=POPUP_H+MARGIN||spaceBelow>=spaceAbove;
+      let top=openBelow?r.bottom+4:r.top-POPUP_H-4;
+      // Clamp so the popup always stays fully within the viewport, whichever side it opens on.
+      top=Math.max(MARGIN,Math.min(top,window.innerHeight-POPUP_H-MARGIN));
       setPopPos({
-        left:Math.min(r.left,window.innerWidth-218),
-        top:goAbove?"auto":r.bottom+4,
-        bottom:goAbove?window.innerHeight-r.top+4:"auto",
+        left:Math.max(MARGIN,Math.min(r.left,window.innerWidth-POPUP_W-MARGIN)),
+        top,
       });
     }
     setOpen(o=>!o);
@@ -1407,40 +1416,43 @@ function DateCell({value,onChange}){
           onMouseEnter={e=>e.currentTarget.style.color=C.red15}
           onMouseLeave={e=>e.currentTarget.style.color=C.textLight}><X size={11}/></button>}
       </div>
-      {open&&<div ref={popRef} style={{
-        position:"fixed",left:popPos.left,top:popPos.top,bottom:popPos.bottom,
-        background:"#fff",borderRadius:10,boxShadow:"0 8px 32px rgba(0,48,87,.18)",
-        padding:"12px",width:212,fontFamily:"'Helvetica Neue',Arial,sans-serif",
-        userSelect:"none",zIndex:9999,
-      }}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-          <button onClick={prevM} style={{background:"none",border:"none",cursor:"pointer",
-            padding:"2px 8px",borderRadius:4,color:C.blue40,fontSize:16,lineHeight:1}}>‹</button>
-          <span style={{fontSize:13,fontWeight:600,color:C.blue40}}>{MONTHS[viewMonth]} {viewYear}</span>
-          <button onClick={nextM} style={{background:"none",border:"none",cursor:"pointer",
-            padding:"2px 8px",borderRadius:4,color:C.blue40,fontSize:16,lineHeight:1}}>›</button>
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:4}}>
-          {["Su","Mo","Tu","We","Th","Fr","Sa"].map(d=>(
-            <div key={d} style={{textAlign:"center",fontSize:10,color:C.textMuted,fontWeight:600,padding:"2px 0"}}>{d}</div>
-          ))}
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
-          {cells.map((d,i)=>{
-            if(!d)return<div key={"e"+i}/>;
-            const ds=toDs(d);
-            const sel=ds===value;
-            const tod=ds===todayStr;
-            return<button key={d} onClick={()=>select(ds)} style={{
-              background:sel?C.blue40:"transparent",
-              color:sel?"#fff":tod?C.blue35:C.textPrimary,
-              border:tod&&!sel?`1px solid ${C.blue35}`:"1px solid transparent",
-              borderRadius:4,cursor:"pointer",fontSize:12,padding:"4px 0",
-              textAlign:"center",fontWeight:sel||tod?600:400,lineHeight:1.4,
-            }}>{d}</button>;
-          })}
-        </div>
-      </div>}
+      {open&&createPortal(
+        <div ref={popRef} style={{
+          position:"fixed",left:popPos.left,top:popPos.top,
+          background:"#fff",borderRadius:10,boxShadow:"0 8px 32px rgba(0,48,87,.18)",
+          padding:"12px",width:212,fontFamily:"'Helvetica Neue',Arial,sans-serif",
+          userSelect:"none",zIndex:9999,
+        }}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+            <button onClick={prevM} style={{background:"none",border:"none",cursor:"pointer",
+              padding:"2px 8px",borderRadius:4,color:C.blue40,fontSize:16,lineHeight:1}}>‹</button>
+            <span style={{fontSize:13,fontWeight:600,color:C.blue40}}>{MONTHS[viewMonth]} {viewYear}</span>
+            <button onClick={nextM} style={{background:"none",border:"none",cursor:"pointer",
+              padding:"2px 8px",borderRadius:4,color:C.blue40,fontSize:16,lineHeight:1}}>›</button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:4}}>
+            {["Su","Mo","Tu","We","Th","Fr","Sa"].map(d=>(
+              <div key={d} style={{textAlign:"center",fontSize:10,color:C.textMuted,fontWeight:600,padding:"2px 0"}}>{d}</div>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+            {cells.map((d,i)=>{
+              if(!d)return<div key={"e"+i}/>;
+              const ds=toDs(d);
+              const sel=ds===value;
+              const tod=ds===todayStr;
+              return<button key={d} onClick={()=>select(ds)} style={{
+                background:sel?C.blue40:"transparent",
+                color:sel?"#fff":tod?C.blue35:C.textPrimary,
+                border:tod&&!sel?`1px solid ${C.blue35}`:"1px solid transparent",
+                borderRadius:4,cursor:"pointer",fontSize:12,padding:"4px 0",
+                textAlign:"center",fontWeight:sel||tod?600:400,lineHeight:1.4,
+              }}>{d}</button>;
+            })}
+          </div>
+        </div>,
+        document.body
+      )}
     </>
   );
 }
@@ -2118,6 +2130,7 @@ function CallingsPipelinePage({
       return CALLING_STAGES[i+dir]?{...x,stage:CALLING_STAGES[i+dir]}:x;
     });
     callRef.current=updated;setCallings(updated);onMutateCallings(updated);
+    autoCreateAppointments(apptRef.current||[],updated,relRef.current||[]);
   };
 
   const finalizeCalling=async(callingCard)=>{
@@ -2174,6 +2187,7 @@ function CallingsPipelinePage({
       return RELEASING_STAGES[i+dir]?{...x,stage:RELEASING_STAGES[i+dir]}:x;
     });
     relRef.current=updated;setReleasings(updated);onMutateReleasings(updated);
+    autoCreateAppointments(apptRef.current||[],callRef.current||[],updated);
   };
 
   const finalizeReleasing=async(relCard)=>{
@@ -3065,6 +3079,26 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
     setBishopricMeeting(newData);
   };
 
+  // Reset the agenda for this date — deletes every row (template items, notes,
+  // assignments, carried-forward topics/tasks) so the tab drops back to the
+  // empty state. Clicking "Create Agenda" afterward rebuilds it fresh, including
+  // a new carry-forward pass from the prior week's incomplete items.
+  const resetAgenda = () => {
+    if (!hasData) return;
+    const ok = window.confirm(
+      `Reset the agenda for ${toDisplayDate(selectedDate)}?\n\nThis deletes all items, assignments, and notes for this week and can't be undone from here. Make sure no one else has this week's agenda open before continuing.`
+    );
+    if (!ok) return;
+    const removedKeys = dateItems.map(r => r.itemKey);
+    const newData = bmData.filter(r => r.date !== selectedDate);
+    setBmData(newData);
+    setBishopricMeeting(newData);
+    bmDataRef.current = newData; // sync ref immediately so the imminent save sees the deletion
+    removedKeys.forEach(k => bmMarkDirty(`${selectedDate}|${k}`));
+    setTimeout(() => doSave(), 100);
+    notify.info('Agenda reset — click "Create Agenda" to start fresh');
+  };
+
   // Update a field for an itemKey on this date
   const updateItem = (itemKey, field, value) => {
     setBmData(prev => {
@@ -3374,6 +3408,12 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
             <Save size={13}/> Save
           </button>
           <SaveStatusDot status={bmSaveStatus}/>
+          {hasData && (
+            <button onClick={resetAgenda} title="Delete this week's agenda and start over"
+              style={{ background: "rgba(255,255,255,.08)", border: "1.5px solid rgba(255,255,255,.3)", color: "#fff", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+              <XCircle size={13}/> Reset
+            </button>
+          )}
         </div>
       </div>
 
@@ -4619,6 +4659,26 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     setWardCouncilMeeting(newData);
   };
 
+  // Reset the agenda for this date — deletes every row (template items, notes,
+  // assignments, carried-forward topics/tasks) so the tab drops back to the
+  // empty state. Clicking "Create Agenda" afterward rebuilds it fresh, including
+  // a new carry-forward pass from the prior week's incomplete items.
+  const resetAgenda = () => {
+    if (!hasData) return;
+    const ok = window.confirm(
+      `Reset the agenda for ${toDisplayDate(selectedDate)}?\n\nThis deletes all items, assignments, and notes for this week and can't be undone from here. Make sure no one else has this week's agenda open before continuing.`
+    );
+    if (!ok) return;
+    const removedKeys = dateItems.map(r => r.itemKey);
+    const newData = wcData.filter(r => r.date !== selectedDate);
+    setWcData(newData);
+    setWardCouncilMeeting(newData);
+    wcDataRef.current = newData; // sync ref immediately so the imminent save sees the deletion
+    removedKeys.forEach(k => wcMarkDirty(`${selectedDate}|${k}`));
+    setTimeout(() => doSave(), 100);
+    notify.info('Agenda reset — click "Create Agenda" to start fresh');
+  };
+
   const updateItem = (itemKey, field, value) => {
     setWcData(prev => {
       const exists = prev.find(r => r.date === selectedDate && r.itemKey === itemKey);
@@ -4787,6 +4847,12 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
             <Save size={13}/> Save
           </button>
           <SaveStatusDot status={wcSaveStatus}/>
+          {isAdmin && hasData && (
+            <button onClick={resetAgenda} title="Delete this week's agenda and start over"
+              style={{ background: "rgba(255,255,255,.08)", border: "1.5px solid rgba(255,255,255,.3)", color: "#fff", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+              <XCircle size={13}/> Reset
+            </button>
+          )}
         </div>
       </div>
 
@@ -6164,6 +6230,62 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false, onSaveSta
     setActiveDate(dateStr);
   };
 
+  // Pull anyone currently sitting in "Announce in Sacrament" (Callings/Releasings tabs) into
+  // this Sunday's program, as the same structured Calling/Releasing Announcement rows the
+  // manual "Add person" flow creates. Additive + dedup'd by name — safe to click repeatedly;
+  // won't touch names already on the program (manually added or previously pulled).
+  const pullCallingsReleasings = () => {
+    const callingsToAnnounce   = (callings||[]).filter(c => c.stage === "Announce in Sacrament");
+    const releasingsToAnnounce = (releasings||[]).filter(r => r.stage === "Announce in Sacrament");
+
+    if (!callingsToAnnounce.length && !releasingsToAnnounce.length) {
+      notify.info('No callings or releasings are in "Announce in Sacrament"');
+      return;
+    }
+
+    const next = [...data];
+    const dateItems = next.filter(r => r.date === activeDate);
+    let nextGlobal = (dateItems.length ? Math.max(...dateItems.map(r => r.globalOrder ?? 0)) : -1) + 1;
+    let addedCount = 0;
+
+    const mergeType = (type, sourceList, mapRow) => {
+      if (!sourceList.length) return;
+      const idx = next.findIndex(r => r.date === activeDate && r.section === "Announcement" && (r.label||"Announcement") === type);
+      const existingRows = idx !== -1 ? parseAnnouncementValue(next[idx].value) : [];
+      const existingNames = new Set(existingRows.map(r => (r.name||"").trim().toLowerCase()));
+      const newRows = sourceList
+        .filter(s => s.name && !existingNames.has(s.name.trim().toLowerCase()))
+        .map(mapRow);
+      if (!newRows.length) return;
+      addedCount += newRows.length;
+      const mergedRows = [...existingRows, ...newRows];
+      if (idx !== -1) {
+        next[idx] = { ...next[idx], value: stringifyAnnouncementValue(mergedRows) };
+      } else {
+        next.push({
+          id: `sp_${Date.now()}_${type.toLowerCase()}`,
+          date: activeDate,
+          section: "Announcement",
+          globalOrder: nextGlobal++,
+          label: type,
+          value: stringifyAnnouncementValue(mergedRows),
+          notes: "",
+        });
+      }
+    };
+
+    mergeType("Calling",   callingsToAnnounce,   c => ({ name: c.name, calling: c.calling||"" }));
+    mergeType("Releasing", releasingsToAnnounce, r => ({ name: r.name, calling: r.calling||"" }));
+
+    if (!addedCount) {
+      notify.info('Everyone in "Announce in Sacrament" is already on the program');
+      return;
+    }
+
+    setData(next);
+    notify.success(`Pulled in ${addedCount} ${addedCount===1?"person":"people"} from Callings/Releasings`);
+  };
+
   // Use the shared global helper — same 5-Sunday window as Bishopric tab
   const sundayOptions = getSurroundingSundays();
   const sectionsInProgram = [...new Set(sortedProgram.map(r=>r.section))];
@@ -6173,6 +6295,10 @@ function SacramentTab({ data, setData, saveFn, pullFn, isMobile=false, onSaveSta
     <div className="animate-in">
       <HeroBanner title="Sacrament Meeting" sub={hasProgram ? `Program for ${formatSundayLabel(activeDate)}` : "Select or create a program"}>
         {hasProgram && (<>
+          <button className="btn-secondary" style={{background:"rgba(255,255,255,.14)",border:"1.5px solid rgba(255,255,255,.3)",color:"#fff"}}
+            onClick={pullCallingsReleasings} title='Pull in anyone currently in "Announce in Sacrament" on the Callings/Releasings tabs'>
+            <RefreshCw size={13}/> Pull in Callings/Releasings
+          </button>
           <button className="btn-secondary" style={{background:"rgba(255,255,255,.14)",border:"1.5px solid rgba(255,255,255,.3)",color:"#fff"}}
             onClick={()=>setShowPrint(true)}>
             <PrinterIcon/> Print Program
