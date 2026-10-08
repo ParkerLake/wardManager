@@ -257,7 +257,7 @@ export async function pullSacramentProgram() {
 
 // ── Sheet-based discussion topics (config.WC_AGENDA_SOURCE === "sheet") ───────
 // Agenda tab layout, one block per meeting, newest block LAST:
-//   A: date (real date cell)            C: =TEXT(A#,"yyyy-mm-dd")   <- header row marker
+//   A: date, e.g. "Sunday October 11"   (read from the displayed text; year is inferred)
 //   A: Hymn / Opening Prayer / ...      B: assignment formulas (read-only)
 //   A: "Agenda Items"
 //   A: topic text                       B: "Done" (optional)
@@ -273,24 +273,66 @@ export const getSheetAgendaDates = () => agendaDates;
 const isTopicRow = r => !!r.itemKey && r.itemKey.startsWith("topic_");
 const isDoneCell = v => v === true || /^(true|yes|x|done|\u2713)$/i.test(String(v ?? "").trim());
 
-function parseAgenda(values) {
+const MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+const DAYS   = ["sun","mon","tue","wed","thu","fri","sat"];
+const pad2   = n => String(n).padStart(2, "0");
+
+// Turn a block header like "Sunday October 11", "Oct 11", "10/11/2026" or "2026-10-11"
+// into "YYYY-MM-DD". When the year is missing it is inferred: the weekday name (if given)
+// must match, and the year closest to today wins.
+function parseHeaderDate(text, now = new Date()) {
+  const t = String(text ?? "").trim();
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return t;
+  m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${pad2(m[1])}-${pad2(m[2])}`;
+  m = t.match(/^(?:([A-Za-z]+),?\s+)?([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?$/);
+  if (!m) return null;
+  const mon = MONTHS.indexOf(m[2].slice(0, 3).toLowerCase());
+  if (mon < 0) return null;
+  const day = parseInt(m[3], 10);
+  const dow = m[1] ? DAYS.indexOf(m[1].slice(0, 3).toLowerCase()) : -1;
+  if (m[1] && dow < 0) return null;
+  const y0 = now.getFullYear();
+  const years = m[4] ? [parseInt(m[4], 10)] : [y0 - 3, y0 - 2, y0 - 1, y0, y0 + 1];
+  let best = null, bestDist = Infinity;
+  years.forEach(y => {
+    const d = new Date(y, mon, day, 12);
+    if (d.getMonth() !== mon || d.getDate() !== day) return;
+    if (dow >= 0 && d.getDay() !== dow) return;
+    const dist = Math.abs(d - now);
+    if (dist < bestDist) { best = d; bestDist = dist; }
+  });
+  return best ? `${best.getFullYear()}-${pad2(mon + 1)}-${pad2(day)}` : null;
+}
+
+const isAgendaItemsCell = v => String(v ?? "").trim().toLowerCase() === "agenda items";
+
+function parseAgenda(values, now = new Date()) {
   const rows = values || [];
-  const blocks = [];
+  // Candidate headers: a column-A cell that reads as a date.
+  const cands = [];
   rows.forEach((r, i) => {
-    if (ISO_DATE.test(String(r?.[2] ?? "").trim())) {
-      blocks.push({ date: String(r[2]).trim(), headerRow: i, itemsStart: null, end: rows.length, topics: [], isLatest: false });
+    const iso = parseHeaderDate(r?.[0], now);
+    if (iso) cands.push({ date: iso, headerRow: i });
+  });
+  // A real header has an "Agenda Items" row before the next candidate (this ignores topics
+  // that merely look like a date, e.g. "Oct 25").
+  const blocks = [];
+  cands.forEach((c, k) => {
+    const limit = k + 1 < cands.length ? cands[k + 1].headerRow : rows.length;
+    for (let i = c.headerRow + 1; i < limit; i++) {
+      if (isAgendaItemsCell(rows[i]?.[0])) {
+        blocks.push({ date: c.date, headerRow: c.headerRow, itemsStart: i + 1, end: rows.length, topics: [], isLatest: false });
+        break;
+      }
     }
   });
   blocks.forEach((b, k) => {
     if (k + 1 < blocks.length) b.end = blocks[k + 1].headerRow;
-    for (let i = b.headerRow + 1; i < b.end; i++) {
-      if (String(rows[i]?.[0] ?? "").trim().toLowerCase() === "agenda items") { b.itemsStart = i + 1; break; }
-    }
-    if (b.itemsStart !== null) {
-      for (let i = b.itemsStart; i < b.end; i++) {
-        const text = String(rows[i]?.[0] ?? "").trim();
-        if (text) b.topics.push({ text, done: isDoneCell(rows[i]?.[1]) });
-      }
+    for (let i = b.itemsStart; i < b.end; i++) {
+      const text = String(rows[i]?.[0] ?? "").trim();
+      if (text) b.topics.push({ text, done: isDoneCell(rows[i]?.[1]) });
     }
   });
   if (blocks.length) blocks[blocks.length - 1].isLatest = true;
@@ -298,7 +340,7 @@ function parseAgenda(values) {
 }
 
 async function readAgendaBlocks() {
-  const r = await wcReq(`${agendaTab()}!A:C`);
+  const r = await wcReq(`${agendaTab()}!A:B`);
   return parseAgenda(r.values);
 }
 
@@ -340,9 +382,6 @@ async function writeAgendaTopics(block, baseTopics, localTopics) {
   if (JSON.stringify(merged) === JSON.stringify(block.topics)) return; // nothing to change
   if (!block.isLatest) {
     throw new Error("Only the latest week's agenda items can be edited from the app. Edit older weeks in the sheet.");
-  }
-  if (block.itemsStart === null) {
-    throw new Error(`The ${block.date} block in the Agenda tab has no "Agenda Items" row.`);
   }
   const span  = Math.max(block.end - block.itemsStart, merged.length) + 5; // blank out removed items
   const start = block.itemsStart + 1; // 1-based sheet row
