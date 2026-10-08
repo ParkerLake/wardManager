@@ -4818,7 +4818,11 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
   const isEvenWeek = week % 2 === 0;
 
   const dateItems = wcData.filter(r => r.date === selectedDate);
-  const hasData   = dateItems.length > 0;
+  // Sheet-based topics (config.WC_AGENDA_SOURCE === "sheet"): topics come from the Agenda tab,
+  // so they don't count as "the program has been created", and they aren't auto-carried forward.
+  const sheetTopics = config.WC_AGENDA_SOURCE === "sheet";
+  const isTopicKey  = k => !!k && k.startsWith("topic_");
+  const hasData   = dateItems.some(r => !(sheetTopics && isTopicKey(r.itemKey)));
 
   // Upcoming calendar events for review_calendar live badge
   const upcomingCalendarEvents = (() => {
@@ -4960,19 +4964,32 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
   // ── Meeting sync ──
   const wcDiff = useCallback((local, remote) => {
     if (!remote || !Array.isArray(remote)) return 0;
-    const localDate  = local.filter(r => r.date === selectedDate);
-    const remoteDate = remote.filter(r => r.date === selectedDate);
+    let localDate  = local.filter(r => r.date === selectedDate);
+    let remoteDate = remote.filter(r => r.date === selectedDate);
+    // Sheet-based topics have positional keys, so compare them by text/done instead of key.
+    let topicDiff = 0;
+    if (config.WC_AGENDA_SOURCE === "sheet" && remoteDate.some(r => (r.itemKey||"").startsWith("topic_sheet_"))) {
+      const isT = r => (r.itemKey||"").startsWith("topic_");
+      const sig = rows => rows.filter(isT).map(r => `${(r.notes||"").trim()}|${r.done ? 1 : 0}`).sort().join("\n");
+      const lt = localDate.filter(isT), rt = remoteDate.filter(isT);
+      topicDiff = sig(lt) === sig(rt) ? 0 : Math.max(1, Math.abs(rt.length - lt.length));
+      localDate  = localDate.filter(r => !isT(r));
+      remoteDate = remoteDate.filter(r => !isT(r));
+    }
     // Only alert when remote has content local doesn't — not when local is ahead
+    let rowDiff;
     if (remoteDate.length <= localDate.length) {
       const localMap = new Map(localDate.map(r => [`${r.date}|${r.itemKey}`, r]));
-      return remoteDate.filter(rem => {
+      rowDiff = remoteDate.filter(rem => {
         const key = `${rem.date}|${rem.itemKey}`;
         const loc = localMap.get(key);
         if (!loc) return true;
         return rem.assignee !== loc.assignee || rem.done !== loc.done || rem.notes !== loc.notes;
       }).length;
+    } else {
+      rowDiff = remoteDate.length - localDate.length;
     }
-    return remoteDate.length - localDate.length;
+    return topicDiff + rowDiff;
   }, [selectedDate]);
 
   const { markDirty: wcMarkDirty, doSave, saveStatus: wcSaveStatus,
@@ -4994,7 +5011,19 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
       return d.wardCouncilMeeting || [];
     },
     diffFn:   wcDiff,
-    onApply:  (remote) => { setWcData(remote); setWardCouncilMeeting(remote); },
+    onApply:  (remote) => {
+      if (config.WC_AGENDA_SOURCE === "sheet") {
+        // Merging local + remote can duplicate sheet topics; drop repeats of the same text per date.
+        const seen = new Set();
+        remote = remote.filter(r => {
+          if (!(r.itemKey||"").startsWith("topic_")) return true;
+          const k = `${r.date}|${(r.notes||"").trim().toLowerCase()}`;
+          if (seen.has(k)) return false;
+          seen.add(k); return true;
+        });
+      }
+      setWcData(remote); setWardCouncilMeeting(remote);
+    },
     enabled:  true,
   });
 
@@ -5013,7 +5042,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
     const currentKeys = new Set(data.filter(r => r.date === selectedDate).map(r => r.itemKey));
     const toCarry = data.filter(r =>
       r.date === priorDate && !r.done &&
-      (r.itemKey.startsWith("topic_") || r.itemKey.startsWith("task_")) &&
+      ((!sheetTopics && r.itemKey.startsWith("topic_")) || r.itemKey.startsWith("task_")) &&
       !currentKeys.has(r.itemKey)
     );
     if (toCarry.length === 0) return;
@@ -5045,12 +5074,13 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
       ? wcData
           .filter(r =>
             r.date === priorDate && !r.done &&
-            (r.itemKey.startsWith("topic_") || r.itemKey.startsWith("task_"))
+            ((!sheetTopics && r.itemKey.startsWith("topic_")) || r.itemKey.startsWith("task_"))
           )
           .map(r => ({ ...r, date: selectedDate, id: `wc_carried_${r.itemKey}` }))
       : [];
 
-    const newData = [...wcData.filter(r => r.date !== selectedDate), ...rows, ...carried];
+    // In sheet mode keep this date's topics (they live in the Agenda tab, not the template)
+    const newData = [...wcData.filter(r => r.date !== selectedDate || (sheetTopics && isTopicKey(r.itemKey))), ...rows, ...carried];
     setWcData(newData);
     setWardCouncilMeeting(newData);
   };

@@ -255,9 +255,115 @@ export async function pullSacramentProgram() {
   return { sacramentProgram: rows };
 }
 
+// ── Sheet-based discussion topics (config.WC_AGENDA_SOURCE === "sheet") ───────
+// Agenda tab layout, one block per meeting, newest block LAST:
+//   A: date (real date cell)            C: =TEXT(A#,"yyyy-mm-dd")   <- header row marker
+//   A: Hymn / Opening Prayer / ...      B: assignment formulas (read-only)
+//   A: "Agenda Items"
+//   A: topic text                       B: "Done" (optional)
+// Only the LAST block can be resized from the app, so nothing sits below it.
+
+const agendaOn   = () => config.WC_AGENDA_SOURCE === "sheet";
+const agendaTab  = () => config.WC_AGENDA_TAB || "Agenda";
+const ISO_DATE   = /^\d{4}-\d{2}-\d{2}$/;
+let agendaDates  = new Set();
+export const isSheetAgenda       = () => agendaOn();
+export const getSheetAgendaDates = () => agendaDates;
+
+const isTopicRow = r => !!r.itemKey && r.itemKey.startsWith("topic_");
+const isDoneCell = v => v === true || /^(true|yes|x|done|\u2713)$/i.test(String(v ?? "").trim());
+
+function parseAgenda(values) {
+  const rows = values || [];
+  const blocks = [];
+  rows.forEach((r, i) => {
+    if (ISO_DATE.test(String(r?.[2] ?? "").trim())) {
+      blocks.push({ date: String(r[2]).trim(), headerRow: i, itemsStart: null, end: rows.length, topics: [], isLatest: false });
+    }
+  });
+  blocks.forEach((b, k) => {
+    if (k + 1 < blocks.length) b.end = blocks[k + 1].headerRow;
+    for (let i = b.headerRow + 1; i < b.end; i++) {
+      if (String(rows[i]?.[0] ?? "").trim().toLowerCase() === "agenda items") { b.itemsStart = i + 1; break; }
+    }
+    if (b.itemsStart !== null) {
+      for (let i = b.itemsStart; i < b.end; i++) {
+        const text = String(rows[i]?.[0] ?? "").trim();
+        if (text) b.topics.push({ text, done: isDoneCell(rows[i]?.[1]) });
+      }
+    }
+  });
+  if (blocks.length) blocks[blocks.length - 1].isLatest = true;
+  return blocks;
+}
+
+async function readAgendaBlocks() {
+  const r = await wcReq(`${agendaTab()}!A:C`);
+  return parseAgenda(r.values);
+}
+
+function agendaToMeetingRows(blocks) {
+  return blocks.flatMap(b => b.topics.map((t, i) => ({
+    id: `wc_topic_sheet_${b.date}_${i}`, date: b.date, itemKey: `topic_sheet_${i}`,
+    assignee: "", done: t.done, notes: t.text, customLabel: "", spiritToggle: "", topicOrder: i,
+  })));
+}
+
+function rowsToTopics(rows) {
+  return [...rows]
+    .sort((a, b) => (a.topicOrder ?? 0) - (b.topicOrder ?? 0))
+    .map(r => ({ text: String(r.notes || "").trim(), done: !!r.done }))
+    .filter(t => t.text);
+}
+
+// Apply this user's changes (base -> local) on top of what is in the sheet now,
+// so a stale base can never wipe out someone else's edits.
+function mergeTopics(base, local, current) {
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  if (same(current, base)) return local;
+  const baseMap  = new Map(base.map(t => [t.text, t]));
+  const localMap = new Map(local.map(t => [t.text, t]));
+  const removed  = new Set(base.filter(t => !localMap.has(t.text)).map(t => t.text));
+  const result = current
+    .filter(t => !removed.has(t.text))
+    .map(t => {
+      const l = localMap.get(t.text), b = baseMap.get(t.text);
+      return l && b && l.done !== b.done ? { ...t, done: l.done } : t;
+    });
+  const have = new Set(result.map(t => t.text));
+  local.forEach(t => { if (!have.has(t.text)) { result.push(t); have.add(t.text); } });
+  return result;
+}
+
+async function writeAgendaTopics(block, baseTopics, localTopics) {
+  const merged = mergeTopics(baseTopics, localTopics, block.topics);
+  if (JSON.stringify(merged) === JSON.stringify(block.topics)) return; // nothing to change
+  if (!block.isLatest) {
+    throw new Error("Only the latest week's agenda items can be edited from the app. Edit older weeks in the sheet.");
+  }
+  if (block.itemsStart === null) {
+    throw new Error(`The ${block.date} block in the Agenda tab has no "Agenda Items" row.`);
+  }
+  const span  = Math.max(block.end - block.itemsStart, merged.length) + 5; // blank out removed items
+  const start = block.itemsStart + 1; // 1-based sheet row
+  const values = Array.from({ length: span }, (_, i) => merged[i] ? [merged[i].text, merged[i].done ? "Done" : ""] : ["", ""]);
+  await wcReq(`${agendaTab()}!A${start}:B${start + span - 1}`, "PUT", { values });
+}
+
 export async function pullWardCouncilMeeting() {
-  const r = await wcReq("WardCouncilMeeting!A:H");
-  return { wardCouncilMeeting: rowsToMeeting(r.values) };
+  const [r, blocks] = await Promise.all([
+    wcReq("WardCouncilMeeting!A:H"),
+    agendaOn() ? readAgendaBlocks().catch(e => { console.error("Agenda tab read failed, using WardCouncilMeeting topics:", e); return null; }) : null,
+  ]);
+  let rows = rowsToMeeting(r.values);
+  if (blocks) {
+    // Dates that have a block in the Agenda tab take their topics from the sheet.
+    agendaDates = new Set(blocks.map(b => b.date));
+    rows = rows.filter(x => !(agendaDates.has(x.date) && isTopicRow(x))).concat(agendaToMeetingRows(blocks));
+  } else {
+    agendaDates = new Set();
+  }
+  return { wardCouncilMeeting: rows };
 }
 
 export async function pullBishopricLinks() {
@@ -399,6 +505,26 @@ export async function pushBishopricMeeting(localDateRows, date, baseRows = [], l
 }
 
 export async function pushWardCouncilMeeting(localDateRows, date, baseRows = [], localAllRows = []) {
+  // Sheet-based topics: for dates that have a block in the Agenda tab, topics are
+  // written to that tab and kept OUT of WardCouncilMeeting (old rows are preserved).
+  let dates = null;
+  if (agendaOn()) {
+    const blocks = await readAgendaBlocks().catch(e => { console.error("Agenda tab read failed:", e); return null; });
+    if (blocks) {
+      dates = new Set(blocks.map(b => b.date));
+      agendaDates = dates;
+      const block = blocks.find(b => b.date === date);
+      if (block) {
+        const localTopics = localDateRows.filter(isTopicRow);
+        const baseTopics  = baseRows.filter(r => r.date === date && isTopicRow(r));
+        await writeAgendaTopics(block, rowsToTopics(baseTopics), rowsToTopics(localTopics));
+      }
+      const strip = rows => rows.filter(r => !(dates.has(r.date) && isTopicRow(r)));
+      localDateRows = strip(localDateRows);
+      baseRows      = strip(baseRows);
+      localAllRows  = strip(localAllRows);
+    }
+  }
   let remoteAll = [];
   try {
     const r = await wcReq("WardCouncilMeeting!A:H");
@@ -409,7 +535,15 @@ export async function pushWardCouncilMeeting(localDateRows, date, baseRows = [],
   const mergedDate = baseRows.length > 0 && remoteDate.length > 0
     ? threewayMergeDate(localDateRows, remoteDate, baseRows)
     : localDateRows;
-  await clearAndWrite(WCID(), "WardCouncilMeeting!A:H", meetingToRows([...otherDates, ...mergedDate]));
+  const finalRows = [...otherDates, ...mergedDate];
+  if (dates) {
+    // Keep the original topic rows for sheet-managed dates so rollback is lossless.
+    const have = new Set(finalRows.map(r => `${r.date}|${r.itemKey}`));
+    remoteAll.forEach(r => {
+      if (dates.has(r.date) && isTopicRow(r) && !have.has(`${r.date}|${r.itemKey}`)) finalRows.push(r);
+    });
+  }
+  await clearAndWrite(WCID(), "WardCouncilMeeting!A:H", meetingToRows(finalRows));
 }
 
 export async function pushSacramentProgram(localDateRows, date, baseRows = [], localAllRows = []) {
