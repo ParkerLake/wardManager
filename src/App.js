@@ -671,6 +671,7 @@ function MainApp({ user, token, onSignOut }) {
   const [members,setMembers]       = useState([]);
   const [sacramentProgram,setSacrament] = useState([]);
   const [calendar,setCalendar]     = useState([]);
+  const [stagedSlots,setStagedSlots] = useState([]);
   const [bishopricLinks,setBishopricLinks] = useState([]);
   const [wcLinks,setWcLinks]               = useState([]);
   const [callingsRoster,setCallingsRoster] = useState([]);  // from callings roster sheet
@@ -695,6 +696,7 @@ function MainApp({ user, token, onSignOut }) {
     relRef=useRef(releasings),bmRef=useRef(bishopricMeeting),membRef=useRef(members),rosterRef=useRef(roster),
     wcmRef=useRef(wardCouncilMeeting),
     sacrRef=useRef(sacramentProgram),tabRef=useRef(tab),calendarRef=useRef(calendar),
+    stagedRef=useRef(stagedSlots),
     pulledRef=useRef(hasPulled),pushTimer=useRef(null),pushing=useRef(false),
     autoApptGuard=useRef(null), // stores last-processed callings+releasings signature
     pipelineDirty=useRef(false),       // true when callings/releasings have unsaved local changes
@@ -702,7 +704,8 @@ function MainApp({ user, token, onSignOut }) {
     bmDirty=useRef(false),             // true when bishopric meeting has unsaved local changes
     wcDirty=useRef(false),             // true when ward council meeting has unsaved local changes
     sacrDirty=useRef(false),           // true when sacrament program has unsaved local changes
-    calendarDirty=useRef(false);       // true when calendar has unsaved local changes
+    calendarDirty=useRef(false),       // true when calendar has unsaved local changes
+    stagingDirty=useRef(false);        // true when staged slots have unsaved local changes
 
   useEffect(()=>{apptRef.current=appointments;},[appointments]);
   useEffect(()=>{callRef.current=callings;},[callings]);
@@ -714,6 +717,7 @@ function MainApp({ user, token, onSignOut }) {
   useEffect(()=>{sacrRef.current=sacramentProgram;},[sacramentProgram]);
   useEffect(()=>{wcmRef.current=wardCouncilMeeting;},[wardCouncilMeeting]);
   useEffect(()=>{calendarRef.current=calendar;},[calendar]);
+  useEffect(()=>{stagedRef.current=stagedSlots;},[stagedSlots]);
   useEffect(()=>{pulledRef.current=hasPulled;},[hasPulled]);
 
   const doTestConnection = useCallback(async() => {
@@ -748,10 +752,12 @@ function MainApp({ user, token, onSignOut }) {
           const d = await sheetsLightPull();
           if(!appointmentsDirty.current) setAppts(d.appointments);
           if(!pipelineDirty.current){ setCallings(d.callings); setReleasings(d.releasings); }
+          if(!stagingDirty.current) setStagedSlots(d.stagedSlots||[]);
         } else {
           const d = await pullAll();
           if(!appointmentsDirty.current) setAppts(d.appointments);
           if(!pipelineDirty.current){ setCallings(d.callings); setReleasings(d.releasings); }
+          if(!stagingDirty.current) setStagedSlots(d.stagedSlots||[]);
           if(!bmDirty.current) setBishopricMeeting(d.bishopricMeeting||[]);
           if(d.members) setMembers(d.members);
           if(d.roster) setRoster(d.roster);
@@ -824,6 +830,7 @@ function MainApp({ user, token, onSignOut }) {
       await pushAll({
         appointments:apptRef.current, callings:callRef.current,
         releasings:relRef.current, members:membRef.current,
+        stagedSlots:stagedRef.current,
       });
       setLastSync(new Date()); setSyncError(null); setSyncStatus("idle");
     } catch(e) {
@@ -909,7 +916,7 @@ function MainApp({ user, token, onSignOut }) {
     clearTimeout(pushTimer.current);
     pushTimer.current=setTimeout(()=>doPush(),AUTO_PUSH_MS);
     return()=>clearTimeout(pushTimer.current);
-  },[appointments,callings,releasings,hasPulled,doPush]);
+  },[appointments,callings,releasings,stagedSlots,hasPulled,doPush]);
 
   // Stale-data alert: warn if data hasn't been pulled in > 5 minutes
   useEffect(()=>{
@@ -923,23 +930,35 @@ function MainApp({ user, token, onSignOut }) {
     return()=>clearInterval(id);
   },[lastSyncedAt]);
 
-  // ── Auto-create appointments — runs inside doPull, not as a separate effect ──
-  // See autoCreateAppointments() called at the end of doPull.
-  // Using a useEffect caused multi-device/multi-tab race conditions where
-  // each device would independently create duplicates.
+  // ── Auto-create appointments — called directly from the Callings/Releasings
+  // mutation handlers (saveCalling, setCallingStage, moveCallingStage, and the
+  // Releasing equivalents) every time a card is saved or its stage changes,
+  // NOT from doPull. Each call re-scans the full callings/releasings arrays,
+  // so it's re-entrant/idempotent as long as hasAppt() below correctly detects
+  // "already created" — see the note on why status is intentionally ignored.
 
-  // ── Auto-create appointments from freshly-pulled data ──
-  // Called directly inside doPull so it always uses real sheet data.
-  // This prevents multi-device race conditions — each pull is atomic.
   const autoCreateAppointments = useCallback(async (freshAppts, freshCallings, freshReleasings) => {
     if (!isAdminRef.current) return;
-    // Check if person already has a non-completed appointment for this specific purpose.
-    // Matches on name + purpose — an unrelated open appointment (e.g. Temple Recommend)
-    // shouldn't block a new Calling/Releasing/Set Apart appointment from being created.
-    const hasAppt = (name, purpose) => freshAppts.some(a =>
+    // Check if person already has ANY appointment (any status, including
+    // Completed) for this specific purpose AND specific calling. Matching on
+    // the calling too (compared against the appointment's `notes` field,
+    // which is where the calling name is stored for auto-created
+    // appointments) means a person being called/released from a DIFFERENT
+    // calling later still gets a fresh appointment — only the exact same
+    // person+purpose+calling combo is deduped.
+    // IMPORTANT: status is deliberately NOT checked here. If a completed
+    // appointment were excluded, then completing an appointment while its
+    // calling/releasing card is still sitting in the trigger stage
+    // ("Approved to Call"/"Approved to Release"/"Sustained") would cause the
+    // very next card mutation (on ANY calling/releasing, since this rescans
+    // everything) to "re-discover" that person as needing an appointment and
+    // create a duplicate. Once an appointment has been created for a given
+    // name+purpose+calling, it should never be auto-created again, regardless
+    // of status.
+    const hasAppt = (name, purpose, callingName) => freshAppts.some(a =>
       a.name.toLowerCase() === name.toLowerCase() &&
       a.purpose === purpose &&
-      a.status !== "Completed"
+      (a.notes||"").trim().toLowerCase() === (callingName||"").trim().toLowerCase()
     );
 
     const toCreate = [];
@@ -948,7 +967,7 @@ function MainApp({ user, token, onSignOut }) {
     freshCallings.forEach(c => {
       if (c.stage !== "Approved to Call" || !c.name) return;
       const key = `${c.name}|Calling|${c.calling}`;
-      if (seen.has(key) || hasAppt(c.name, "Calling")) return;
+      if (seen.has(key) || hasAppt(c.name, "Calling", c.calling)) return;
       seen.add(key);
       toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
         name:c.name, status:"Need to Schedule", owner:"Bishop",
@@ -958,7 +977,7 @@ function MainApp({ user, token, onSignOut }) {
     freshReleasings.forEach(r => {
       if (r.stage !== "Approved to Release" || !r.name) return;
       const key = `${r.name}|Releasing|${r.calling}`;
-      if (seen.has(key) || hasAppt(r.name, "Releasing")) return;
+      if (seen.has(key) || hasAppt(r.name, "Releasing", r.calling)) return;
       seen.add(key);
       toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
         name:r.name, status:"Need to Schedule", owner:"Bishop",
@@ -968,7 +987,7 @@ function MainApp({ user, token, onSignOut }) {
     freshCallings.forEach(c => {
       if (c.stage !== "Sustained" || !c.name) return;
       const key = `${c.name}|Set Apart|${c.calling}`;
-      if (seen.has(key) || hasAppt(c.name, "Set Apart")) return;
+      if (seen.has(key) || hasAppt(c.name, "Set Apart", c.calling)) return;
       seen.add(key);
       toCreate.push({ id:`a_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
         name:c.name, status:"Need to Schedule", owner:"Bishop",
@@ -1012,8 +1031,8 @@ function MainApp({ user, token, onSignOut }) {
   const NAV_GROUPS = isAdmin ? [
     { id:"scheduling", label:"Scheduling", children:[
       {id:"appointments", label:"Appointments"},
+      {id:"staging",      label:"Staging"},
       {id:"callings",     label:"Callings"},
-      {id:"releasings",   label:"Releasings"},
     ]},
     { id:"meetings", label:"Meetings", children:[
       {id:"bishopric",    label:"Bishopric Council"},
@@ -1154,8 +1173,24 @@ function MainApp({ user, token, onSignOut }) {
             } catch(e){ notify.error("Save failed: "+e.message,6000); }
             finally { appointmentsDirty.current=false; }
           }}/>}
-        {isAdmin&&(tab==="callings"||tab==="releasings")&&<CallingsPipelinePage
-            mode={tab}
+        {isAdmin&&tab==="staging"&&<AppointmentStagingBoard
+            appointments={appointments} setAppointments={setAppts} apptRef={apptRef}
+            stagedSlots={stagedSlots} setStagedSlots={setStagedSlots} stagedRef={stagedRef}
+            roster={roster}
+            onMutateStaged={async(updated)=>{
+              stagingDirty.current=true;
+              try{const{pushAll}=await import("./sheets");await pushAll({appointments:apptRef.current,callings:callRef.current,releasings:relRef.current,members:membRef.current,stagedSlots:updated});setSyncStatus("idle");}
+              catch(e){notify.error("Save failed: "+e.message,6000);}
+              finally{stagingDirty.current=false;}
+            }}
+            onMutateFinalize={async(updatedAppts,updatedStaged)=>{
+              stagingDirty.current=true; appointmentsDirty.current=true;
+              try{const{pushAll}=await import("./sheets");await pushAll({appointments:updatedAppts,callings:callRef.current,releasings:relRef.current,members:membRef.current,stagedSlots:updatedStaged});setSyncStatus("idle");}
+              catch(e){notify.error("Save failed: "+e.message,6000);}
+              finally{stagingDirty.current=false; appointmentsDirty.current=false;}
+            }}
+          />}
+        {isAdmin&&tab==="callings"&&<CallingsPipelinePage
             callings={callings} setCallings={setCallings} callRef={callRef}
             releasings={releasings} setReleasings={setReleasings} relRef={relRef}
             apptRef={apptRef} callingsRoster={callingsRoster}
@@ -1334,6 +1369,298 @@ function AppointmentsTab({data,setData,roster=[],onDelete}){
       {showForm&&<AppointmentModal item={editing} onSave={save} onClose={()=>{setSF2(false);setEditing(null);}} roster={roster}/>}
     </div>
   );
+}
+
+// ─── Appointment Staging Board ─────────────────────────────────────────────────
+// A day-at-a-time, 15-minute-increment grid (one column per leader) for holding
+// candidate appointment times before they're locked in. Only existing Appointments
+// (not yet Scheduled/Completed) can be staged here — this never creates new people
+// or purposes, it only proposes a date+time for something already on the board.
+const STAGING_START_HOUR = 7;   // 7:00 AM
+const STAGING_END_HOUR   = 21;  // 9:00 PM (last slot starts 8:45 PM)
+const STAGING_STEP_MIN   = 15;
+const STAGING_DURATION_OPTIONS = [15,30,45,60]; // minutes — chosen per-appointment when staging
+
+function buildStagingSlots(){
+  const list=[];
+  for(let mins=STAGING_START_HOUR*60; mins<STAGING_END_HOUR*60; mins+=STAGING_STEP_MIN){
+    const h=Math.floor(mins/60), m=mins%60;
+    list.push(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`); // 24h "HH:MM"
+  }
+  return list;
+}
+
+function AppointmentStagingBoard({
+  appointments,setAppointments,apptRef,
+  stagedSlots,setStagedSlots,stagedRef,
+  roster=[],
+  onMutateStaged,onMutateFinalize,
+}){
+  const[day,setDay]=useState(()=>localDateStr(new Date()));
+  const[picker,setPicker]=useState(null); // {leader,time} | null
+
+  const slots=useMemo(()=>buildStagingSlots(),[]);
+  const rowIndexByTime=useMemo(()=>{
+    const m={}; slots.forEach((t,i)=>{m[t]=i;}); return m;
+  },[slots]);
+
+  const apptById=useMemo(()=>{
+    const map={};
+    appointments.forEach(a=>{map[a.id]=a;});
+    return map;
+  },[appointments]);
+
+  // Anything not yet Scheduled/Completed can be staged
+  const stageable=useMemo(()=>appointments.filter(a=>a.status!=="Scheduled"&&a.status!=="Completed"),[appointments]);
+
+  const dayItems=useMemo(()=>stagedSlots.filter(s=>s.stagedDate===day),[stagedSlots,day]);
+
+  // Group each leader's staged items into visual "clusters" — items whose time
+  // ranges overlap (accounting for duration) get merged into one spanning grid
+  // block, so a 45-minute appointment shows as one tall cell instead of 3
+  // separate 15-min rows. Within a cluster, more than one distinct person means
+  // a real double-booking conflict for that leader; the same person appearing
+  // twice (e.g. a Calling appointment and a Releasing appointment) is expected
+  // and not flagged. Conflicts are leader-specific — different leaders can
+  // legitimately have overlapping appointments with different people.
+  const leaderRowMeta=useMemo(()=>{
+    const meta={};
+    LEADERS.forEach(leader=>{
+      const items=dayItems
+        .filter(s=>apptById[s.apptId]?.owner===leader)
+        .map(s=>{
+          const startRow=rowIndexByTime[s.stagedTime];
+          const span=Math.max(1,Math.round((s.durationMin||STAGING_STEP_MIN)/STAGING_STEP_MIN));
+          return{...s,appt:apptById[s.apptId],startRow,endRow:startRow+span};
+        })
+        .filter(it=>it.startRow!==undefined)
+        .sort((a,b)=>a.startRow-b.startRow);
+      const clusters=[];
+      items.forEach(it=>{
+        const last=clusters[clusters.length-1];
+        if(last&&it.startRow<last.endRow){
+          last.items.push(it);
+          last.endRow=Math.max(last.endRow,it.endRow);
+        } else {
+          clusters.push({startRow:it.startRow,endRow:it.endRow,items:[it]});
+        }
+      });
+      const starts={},covered=new Set();
+      clusters.forEach(cl=>{
+        starts[cl.startRow]=cl;
+        for(let r=cl.startRow;r<cl.endRow;r++) covered.add(r);
+      });
+      meta[leader]={starts,covered};
+    });
+    return meta;
+  },[dayItems,apptById,rowIndexByTime]);
+
+  const shiftDay=(delta)=>{
+    const[y,m,d]=day.split("-").map(Number);
+    setDay(localDateStr(new Date(y,m-1,d+delta)));
+  };
+
+  const addSlot=(apptId,leader,time,durationMin)=>{
+    const newSlot={id:`stg_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,apptId,stagedDate:day,stagedTime:time,durationMin:durationMin||STAGING_STEP_MIN,createdDate:localDateStr(new Date())};
+    const updated=[...stagedSlots,newSlot];
+    stagedRef.current=updated;setStagedSlots(updated);
+    onMutateStaged(updated);
+    notify.success("Added to staging");
+    setPicker(null);
+  };
+
+  const removeSlot=(slotId)=>{
+    const updated=stagedSlots.filter(s=>s.id!==slotId);
+    stagedRef.current=updated;setStagedSlots(updated);
+    onMutateStaged(updated);
+    notify.info("Removed from staging");
+  };
+
+  // Finalizing locks this appointment in as Scheduled for the staged date.
+  // The finalized slot itself STAYS on the staging calendar (removing it would
+  // make the slot look open when it's actually taken) — only the OTHER
+  // candidate times still staged for that same appointment get cleared out,
+  // since those alternatives are moot once one time is locked in.
+  const finalizeSlot=(slot)=>{
+    const appt=apptById[slot.apptId];
+    if(!appt)return;
+    const updatedAppts=appointments.map(a=>a.id===slot.apptId?{...a,status:"Scheduled",apptDate:slot.stagedDate}:a);
+    const updatedStaged=stagedSlots.filter(s=>s.apptId!==slot.apptId||s.id===slot.id);
+    apptRef.current=updatedAppts;setAppointments(updatedAppts);
+    stagedRef.current=updatedStaged;setStagedSlots(updatedStaged);
+    onMutateFinalize(updatedAppts,updatedStaged);
+    notify.success(`${appt.name} scheduled for ${toDisplayDate(slot.stagedDate)}`);
+  };
+
+  const dayLabel=(()=>{
+    const[y,m,d]=day.split("-").map(Number);
+    return new Date(y,m-1,d).toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"});
+  })();
+
+  // Compact end-time label for a staged item, e.g. "9:00 AM" duration → "9:00–9:45 AM"-style tooltip text.
+  const timeRangeLabel=(startTime,durationMin)=>{
+    const startIdx=rowIndexByTime[startTime];
+    const span=Math.max(1,Math.round((durationMin||STAGING_STEP_MIN)/STAGING_STEP_MIN));
+    if(startIdx===undefined) return to12h(startTime);
+    const endIdx=startIdx+span;
+    const endTime = endIdx<slots.length ? slots[endIdx] : (()=>{
+      const[h,m]=startTime.split(":").map(Number);
+      const total=h*60+m+span*STAGING_STEP_MIN;
+      return `${String(Math.floor(total/60)%24).padStart(2,"0")}:${String(total%60).padStart(2,"0")}`;
+    })();
+    return `${to12h(startTime)}–${to12h(endTime)}`;
+  };
+
+  return(
+    <div className="animate-in" style={{marginTop:32}}>
+      <HeroBanner title="Appointment Staging" sub="Try out times before locking them in as scheduled"/>
+
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+        <button className="btn-secondary" onClick={()=>shiftDay(-1)} title="Previous day"><ChevLeftIcon/></button>
+        <div style={{fontFamily:"Georgia,serif",fontSize:17,color:C.textPrimary,minWidth:220,textAlign:"center"}}>{dayLabel}</div>
+        <button className="btn-secondary" onClick={()=>shiftDay(1)} title="Next day"><ChevRightIcon/></button>
+        <input type="date" value={day} onChange={e=>setDay(e.target.value)} style={{maxWidth:170}}/>
+        <button className="btn-secondary" onClick={()=>setDay(localDateStr(new Date()))}>Today</button>
+      </div>
+
+      <div style={{border:`1.5px solid ${C.border}`,borderRadius:12,overflow:"hidden",background:C.surfaceWhite}}>
+        <div style={{maxHeight:640,overflowY:"auto"}}>
+          {/* Every cell in this grid is explicitly positioned (gridColumn/gridRow) rather
+              than relying on source-order auto-placement, because multi-row spanning
+              blocks (duration > 15min) need to occupy rows that would otherwise be
+              auto-assigned to later cells. Column 1 = time labels, columns 2-4 = leaders. */}
+          <div style={{display:"grid",gridTemplateColumns:"70px repeat(3,1fr)"}}>
+            <div style={{gridColumn:1,gridRow:1,position:"sticky",top:0,background:C.surfaceWarm,borderBottom:`1.5px solid ${C.border}`,zIndex:2}}/>
+            {LEADERS.map((l,li)=>{
+              const os=OWNER_STYLE[l]||{};
+              return<div key={l} style={{gridColumn:li+2,gridRow:1,position:"sticky",top:0,background:C.surfaceWarm,borderBottom:`1.5px solid ${C.border}`,borderLeft:`1px solid ${C.borderLight}`,padding:"8px 10px",fontSize:11,fontWeight:700,letterSpacing:".06em",textTransform:"uppercase",color:os.text||C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",zIndex:2}}>{rosterName(roster,l)}</div>;
+            })}
+
+            {slots.map((time,rowIdx)=>(
+              <div key={`t_${time}`} style={{gridColumn:1,gridRow:rowIdx+2,padding:"6px 8px",fontSize:10,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif",borderBottom:`1px solid ${C.borderLight}`,borderTop:`1px solid ${C.borderLight}`,textAlign:"right"}}>
+                {time.endsWith(":00")?to12h(time):""}
+              </div>
+            ))}
+
+            {LEADERS.map((leader,li)=>{
+              const meta=leaderRowMeta[leader];
+              return slots.map((time,rowIdx)=>{
+                // Covered by an earlier row's spanning block — nothing to render here
+                // (the block above already visually fills this row; the always-present
+                // "+" overlay below still gives this row its own add control).
+                if(meta.covered.has(rowIdx)&&!meta.starts[rowIdx]) return null;
+
+                const cluster=meta.starts[rowIdx];
+                if(cluster){
+                  const names=new Set(cluster.items.map(it=>it.appt?.name).filter(Boolean));
+                  const conflict=names.size>1;
+                  const spanRows=cluster.endRow-cluster.startRow;
+                  return(
+                    <div key={leader+time} style={{
+                      gridColumn:li+2,gridRow:`${rowIdx+2} / span ${spanRows}`,
+                      borderLeft:`1px solid ${C.borderLight}`,borderTop:`1px solid ${C.borderLight}`,
+                      padding:"3px 5px",
+                      background:conflict?"#FDF0F2":"transparent",
+                      display:"flex",flexDirection:"column",gap:3,
+                    }}>
+                      {cluster.items.map(it=>{
+                        const appt=it.appt;
+                        if(!appt)return null;
+                        // A confirmed item is one that's already been finalized as
+                        // Scheduled for exactly this staged date — it stays on the
+                        // board (see finalizeSlot) so the slot doesn't look open,
+                        // but reads as locked-in rather than a candidate to pick.
+                        const confirmed=appt.status==="Scheduled"&&appt.apptDate===it.stagedDate;
+                        return(
+                          <div key={it.id} style={{
+                            display:"flex",alignItems:"center",gap:4,
+                            background:confirmed?"#EAF4EA":conflict?"#FDE0E6":C.surfaceWarm,
+                            border:`1px solid ${confirmed?C.green25:conflict?C.red15:C.borderLight}`,
+                            borderRadius:6,padding:"2px 5px",fontSize:11,
+                          }}>
+                            <PurposeIcon purpose={appt.purpose} size={11} color={confirmed?C.green35:C.textMuted}/>
+                            <span style={{flex:1,fontFamily:"'Helvetica Neue',Arial,sans-serif",color:C.textPrimary,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={`${appt.name} — ${appt.purpose||"—"} — ${timeRangeLabel(it.stagedTime,it.durationMin)}${confirmed?" — Scheduled":""}`}>{appt.name}</span>
+                            <span style={{fontSize:9,color:C.textLight,whiteSpace:"nowrap"}}>{it.durationMin||STAGING_STEP_MIN}m</span>
+                            {confirmed
+                              ?<span title="Scheduled" style={{display:"flex",flexShrink:0,color:C.green25}}><Check size={12}/></span>
+                              :<button onClick={()=>finalizeSlot(it)} title="Finalize — mark Scheduled" style={{background:"none",border:"none",cursor:"pointer",color:C.green25,display:"flex",flexShrink:0}}><Check size={12}/></button>}
+                            <button onClick={()=>removeSlot(it.id)} title="Remove from staging" style={{background:"none",border:"none",cursor:"pointer",color:C.textLight,display:"flex",flexShrink:0}}><X size={11}/></button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                }
+
+                return(
+                  <div key={leader+time} style={{
+                    gridColumn:li+2,gridRow:rowIdx+2,
+                    borderLeft:`1px solid ${C.borderLight}`,borderTop:`1px solid ${C.borderLight}`,
+                    padding:"3px 5px",minHeight:26,
+                  }}/>
+                );
+              });
+            })}
+
+            {/* Always-present add overlay — one per row/leader regardless of whether
+                that row already has a spanning block on it, so a new (possibly
+                overlapping, possibly same-person) candidate can be staged at ANY
+                15-min row, not just wherever a block happens to start. Layered on
+                top of the content cells above; pointerEvents:none on the wrapper
+                lets clicks pass through to the finalize/remove buttons underneath,
+                except over the small "+" itself. */}
+            {LEADERS.map((leader,li)=>slots.map((time,rowIdx)=>(
+              <div key={`add_${leader}_${time}`} style={{gridColumn:li+2,gridRow:rowIdx+2,position:"relative",pointerEvents:"none"}}>
+                <button onClick={()=>setPicker({leader,time})} title={`Stage someone with ${rosterName(roster,leader)} at ${to12h(time)}`}
+                  style={{position:"absolute",right:2,bottom:1,pointerEvents:"auto",zIndex:3,
+                    background:C.surfaceWhite,border:`1px dashed ${C.borderLight}`,borderRadius:4,
+                    color:C.textLight,cursor:"pointer",fontSize:10,lineHeight:1,padding:"1px 4px"}}>+</button>
+              </div>
+            )))}
+          </div>
+        </div>
+      </div>
+
+      {picker&&<StagePickerModal
+        leader={picker.leader} time={picker.time} roster={roster}
+        options={stageable.filter(a=>a.owner===picker.leader&&!stagedSlots.some(s=>s.apptId===a.id&&s.stagedDate===day&&s.stagedTime===picker.time))}
+        onStage={(apptId,durationMin)=>addSlot(apptId,picker.leader,picker.time,durationMin)}
+        onClose={()=>setPicker(null)}
+      />}
+    </div>
+  );
+}
+
+function StagePickerModal({leader,time,roster,options,onStage,onClose}){
+  const[duration,setDuration]=useState(STAGING_STEP_MIN);
+  return<ModalShell onClose={onClose} title={`Stage for ${to12h(time)}`} subtitle={rosterName(roster,leader)}>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+      <label style={{fontSize:12,color:C.textMuted,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>Duration</label>
+      <select value={duration} onChange={e=>setDuration(parseInt(e.target.value,10))} style={{fontSize:13,fontFamily:"Georgia,serif",padding:"3px 6px",borderRadius:6,border:`1px solid ${C.border}`}}>
+        {STAGING_DURATION_OPTIONS.map(d=><option key={d} value={d}>{d} min</option>)}
+      </select>
+    </div>
+    {options.length===0
+      ?<div style={{fontFamily:"Georgia,serif",fontStyle:"italic",color:C.textLight,padding:"12px 0"}}>No appointments waiting for {rosterName(roster,leader)}.</div>
+      :<div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:360,overflowY:"auto"}}>
+          {options.map(a=>(
+            <button key={a.id} onClick={()=>onStage(a.id,duration)} style={{
+              display:"flex",alignItems:"center",gap:8,textAlign:"left",
+              background:C.surfaceWarm,border:`1px solid ${C.borderLight}`,borderRadius:8,
+              padding:"9px 12px",cursor:"pointer",fontFamily:"'Helvetica Neue',Arial,sans-serif",
+            }}>
+              <PurposeIcon purpose={a.purpose} size={14} color={C.textMuted}/>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,color:C.textPrimary,fontWeight:600}}>{a.name}</div>
+                <div style={{fontSize:11,color:C.textMuted}}>{a.purpose||"—"} · {a.status}</div>
+              </div>
+            </button>
+          ))}
+        </div>}
+    <div style={{display:"flex",justifyContent:"flex-end",marginTop:18}}>
+      <button onClick={onClose} className="btn-secondary">Close</button>
+    </div>
+  </ModalShell>;
 }
 
 function PurposeCell({value,onChange}){
@@ -1982,13 +2309,28 @@ function ReleasingCardModal({ item, callingsRoster, stages, onSave, onClose, onD
   );
 }
 
-function CallingKanban({data,stages,onEdit,onMove,onStageChange,onDel,onFinalize,finalizeStage}){
+function CallingKanban({data,stages,onEdit,onMove,onStageChange,onDel,onFinalize,finalizeStage,onReorder,onReorderTo}){
   const[dragging,setDragging]=useState(null);
   const[dragOver,setDragOver]=useState(null);
+  const[dragOverCardId,setDragOverCardId]=useState(null);
   const onDragStart=(e,item)=>{setDragging(item);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",item.id);};
-  const onDragEnd=()=>{setDragging(null);setDragOver(null);};
+  const onDragEnd=()=>{setDragging(null);setDragOver(null);setDragOverCardId(null);};
   const onDragOverCol=(e,col)=>{e.preventDefault();e.dataTransfer.dropEffect="move";setDragOver({col});};
-  const onDrop=(e,targetStage)=>{e.preventDefault();if(dragging&&dragging.stage!==targetStage)onStageChange(dragging.id,targetStage);setDragging(null);setDragOver(null);};
+  const onDrop=(e,targetStage)=>{e.preventDefault();if(dragging&&dragging.stage!==targetStage)onStageChange(dragging.id,targetStage);setDragging(null);setDragOver(null);setDragOverCardId(null);};
+  // Card-level handlers: reordering within the same column (stage). Different-stage drags
+  // fall through (no preventDefault/stopPropagation) so the column-level handlers above
+  // still handle the stage change.
+  const onCardDragOver=(e,c)=>{
+    if(dragging&&onReorderTo&&dragging.id!==c.id&&dragging.stage===c.stage){
+      e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="move";setDragOverCardId(c.id);
+    }
+  };
+  const onCardDrop=(e,c)=>{
+    if(dragging&&onReorderTo&&dragging.id!==c.id&&dragging.stage===c.stage){
+      e.preventDefault();e.stopPropagation();onReorderTo(dragging.id,c.id);
+    }
+    setDragging(null);setDragOver(null);setDragOverCardId(null);
+  };
   return<div style={{display:"flex",gap:10,overflowX:"auto",paddingBottom:8}}>
     {stages.map(s=>{
       const items=data.filter(c=>c.stage===s);const st=PIPELINE_STAGE_STYLE[s]||{};
@@ -2004,15 +2346,17 @@ function CallingKanban({data,stages,onEdit,onMove,onStageChange,onDel,onFinalize
             <span style={{fontSize:10,fontWeight:700,letterSpacing:".09em",textTransform:"uppercase",color:st.text||C.textMuted,flex:1,fontFamily:"'Helvetica Neue',Arial,sans-serif"}}>{s}</span>
             <span style={{fontFamily:"Georgia,serif",fontSize:14,color:st.text||C.textMuted,background:st.bg||C.surfaceWarm,border:`1px solid ${st.border||C.border}`,borderRadius:20,padding:"1px 8px"}}>{items.length}</span>
           </div>
-          {items.map(c=>(
+          {items.map((c,i)=>(
             <div key={c.id} className="kanban-card" draggable
               onDragStart={e=>onDragStart(e,c)} onDragEnd={onDragEnd}
+              onDragOver={e=>onCardDragOver(e,c)} onDrop={e=>onCardDrop(e,c)}
               onClick={()=>!dragging&&onEdit(c)}
               style={{opacity:dragging?.id===c.id?.35:1,cursor:"grab",transition:"opacity .15s, transform .15s",
-                transform:dragging?.id===c.id?"scale(.97)":undefined}}>
+                transform:dragging?.id===c.id?"scale(.97)":undefined,
+                borderTop:dragOverCardId===c.id&&dragging?.id!==c.id?`2px solid ${st.border||C.border}`:"2px solid transparent"}}>
               <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:6,marginBottom:4}}>
                 <div style={{fontFamily:"Georgia,serif",fontSize:15,color:C.textPrimary}}>{c.name||<span style={{color:C.textLight,fontStyle:"italic"}}>No name</span>}</div>
-                <span style={{fontSize:12,color:C.textLight,cursor:"grab",flexShrink:0}} title="Drag to move">⠿</span>
+                <span style={{fontSize:12,color:C.textLight,cursor:"grab",flexShrink:0}} title="Drag to reorder or change stage">⠿</span>
               </div>
               <div style={{fontSize:12,color:C.blue25,fontStyle:"italic",fontFamily:"Georgia,serif",marginBottom:(c.notes||c.linkedId)?8:4}}>
                 {c.organization?`${c.organization} — `:""}{c.calling}
@@ -2032,8 +2376,10 @@ function CallingKanban({data,stages,onEdit,onMove,onStageChange,onDel,onFinalize
               )}
               <div style={{display:"flex",gap:4,justifyContent:"space-between",alignItems:"center",marginTop:4}}>
                 <div style={{display:"flex",gap:4}}>
-                  <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id,-1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move left"><ChevLeftIcon/></button>
-                  <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id, 1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move right"><ChevRightIcon/></button>
+                  {onReorder&&<button className="btn-secondary" disabled={i===0} onClick={e=>{e.stopPropagation();onReorder(c.id,-1);}} style={{padding:"3px 7px",display:"flex",alignItems:"center",opacity:i===0?.4:1}} title="Move up in column"><ChevUpIcon/></button>}
+                  {onReorder&&<button className="btn-secondary" disabled={i===items.length-1} onClick={e=>{e.stopPropagation();onReorder(c.id,1);}} style={{padding:"3px 7px",display:"flex",alignItems:"center",marginRight:6,opacity:i===items.length-1?.4:1}} title="Move down in column"><ChevDownIcon/></button>}
+                  <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id,-1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move to previous stage"><ChevLeftIcon/></button>
+                  <button className="btn-secondary" onClick={e=>{e.stopPropagation();onMove(c.id, 1);}} style={{padding:"3px 9px",display:"flex",alignItems:"center"}} title="Move to next stage"><ChevRightIcon/></button>
                 </div>
                 <button onClick={e=>{e.stopPropagation();onDel(c.id);}}
                   style={{background:"none",border:`1px solid ${C.borderLight}`,borderRadius:5,width:26,height:26,cursor:"pointer",color:C.textLight,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}
@@ -2060,7 +2406,6 @@ function CallingKanban({data,stages,onEdit,onMove,onStageChange,onDel,onFinalize
 }
 
 function CallingsPipelinePage({
-  mode,  // "callings" | "releasings"
   callings,setCallings,callRef,
   releasings,setReleasings,relRef,
   apptRef,callingsRoster,
@@ -2133,6 +2478,33 @@ function CallingsPipelinePage({
     autoCreateAppointments(apptRef.current||[],updated,relRef.current||[]);
   };
 
+  // Reorder a card up(-1)/down(1) among its same-stage siblings — swaps with the nearest
+  // neighbor in that stage. Array order is what's persisted as row order in the sheet.
+  const reorderCalling=(id,dir)=>{
+    const idx=callings.findIndex(x=>x.id===id);
+    if(idx<0)return;
+    const stage=callings[idx].stage;
+    let swapIdx=-1;
+    if(dir<0){ for(let i=idx-1;i>=0;i--){ if(callings[i].stage===stage){swapIdx=i;break;} } }
+    else { for(let i=idx+1;i<callings.length;i++){ if(callings[i].stage===stage){swapIdx=i;break;} } }
+    if(swapIdx<0)return;
+    const updated=[...callings];
+    [updated[idx],updated[swapIdx]]=[updated[swapIdx],updated[idx]];
+    callRef.current=updated;setCallings(updated);onMutateCallings(updated);
+  };
+
+  // Drag-to-reorder: move draggedId to sit where targetId currently is, among same-stage siblings.
+  const reorderCallingTo=(draggedId,targetId)=>{
+    const draggedIdx=callings.findIndex(x=>x.id===draggedId);
+    if(draggedIdx<0)return;
+    const updated=[...callings];
+    const[item]=updated.splice(draggedIdx,1);
+    const insertAt=updated.findIndex(x=>x.id===targetId);
+    if(insertAt<0){updated.splice(draggedIdx,0,item);return;}
+    updated.splice(insertAt,0,item);
+    callRef.current=updated;setCallings(updated);onMutateCallings(updated);
+  };
+
   const finalizeCalling=async(callingCard)=>{
     const today=new Date().toISOString().slice(0,10);
     if(callingCard.isNewCalling){
@@ -2190,6 +2562,32 @@ function CallingsPipelinePage({
     autoCreateAppointments(apptRef.current||[],callRef.current||[],updated);
   };
 
+  // Reorder a card up(-1)/down(1) among its same-stage siblings — see reorderCalling above.
+  const reorderReleasing=(id,dir)=>{
+    const idx=releasings.findIndex(x=>x.id===id);
+    if(idx<0)return;
+    const stage=releasings[idx].stage;
+    let swapIdx=-1;
+    if(dir<0){ for(let i=idx-1;i>=0;i--){ if(releasings[i].stage===stage){swapIdx=i;break;} } }
+    else { for(let i=idx+1;i<releasings.length;i++){ if(releasings[i].stage===stage){swapIdx=i;break;} } }
+    if(swapIdx<0)return;
+    const updated=[...releasings];
+    [updated[idx],updated[swapIdx]]=[updated[swapIdx],updated[idx]];
+    relRef.current=updated;setReleasings(updated);onMutateReleasings(updated);
+  };
+
+  // Drag-to-reorder — see reorderCallingTo above.
+  const reorderReleasingTo=(draggedId,targetId)=>{
+    const draggedIdx=releasings.findIndex(x=>x.id===draggedId);
+    if(draggedIdx<0)return;
+    const updated=[...releasings];
+    const[item]=updated.splice(draggedIdx,1);
+    const insertAt=updated.findIndex(x=>x.id===targetId);
+    if(insertAt<0){updated.splice(draggedIdx,0,item);return;}
+    updated.splice(insertAt,0,item);
+    relRef.current=updated;setReleasings(updated);onMutateReleasings(updated);
+  };
+
   const finalizeReleasing=async(relCard)=>{
     if(!relCard.positionHandedOff&&relCard.rosterRowIndex){
       try{
@@ -2206,8 +2604,8 @@ function CallingsPipelinePage({
   const callingCounts  =CALLING_STAGES.reduce((a,s)=>({...a,[s]:callings.filter(x=>x.stage===s).length}),{});
   const releasingCounts=RELEASING_STAGES.reduce((a,s)=>({...a,[s]:releasings.filter(x=>x.stage===s).length}),{});
 
-  const showCallings  = mode==="callings";
-  const showReleasings= mode==="releasings";
+  const showCallings  = true;
+  const showReleasings= true;
 
   return(
     <div className="animate-in">
@@ -2261,7 +2659,8 @@ function CallingsPipelinePage({
           onEdit={c=>{setEditingCalling(c);setShowCallingForm(true);}}
           onMove={moveCallingStage}
           onStageChange={(id,stage)=>{setCallingStage(id,stage);notify.success("Stage updated");}}
-          onDel={deleteCalling} onFinalize={finalizeCalling} finalizeStage="Set Apart"/>
+          onDel={deleteCalling} onFinalize={finalizeCalling} finalizeStage="Set Apart"
+          onReorder={reorderCalling} onReorderTo={reorderCallingTo}/>
       </>}
 
       {/* ── Releasings Section ── */}
@@ -2290,7 +2689,8 @@ function CallingsPipelinePage({
           onEdit={r=>{setEditingReleasing(r);setShowReleasingForm(true);}}
           onMove={moveReleasingStage}
           onStageChange={(id,stage)=>{setReleasingStage(id,stage);notify.success("Stage updated");}}
-          onDel={deleteReleasing} onFinalize={finalizeReleasing} finalizeStage="Released"/>
+          onDel={deleteReleasing} onFinalize={finalizeReleasing} finalizeStage="Released"
+          onReorder={reorderReleasing} onReorderTo={reorderReleasingTo}/>
       </>}
 
       {showCallingForm&&<CallingCardModal item={editingCalling} callingsRoster={callingsRoster} stages={CALLING_STAGES}
@@ -3699,11 +4099,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
                             <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
                               <button onClick={() => onNavigate("callings")}
                                 style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11, color: C.blue25, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 600, display: "flex", alignItems: "center", gap: 4, textDecoration: "underline" }}>
-                                Open Callings →
-                              </button>
-                              <button onClick={() => onNavigate("releasings")}
-                                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11, color: C.purple, fontFamily: "'Helvetica Neue',Arial,sans-serif", fontWeight: 600, display: "flex", alignItems: "center", gap: 4, textDecoration: "underline" }}>
-                                Open Releasings →
+                                Open Callings & Releasings →
                               </button>
                             </div>
                           )}
@@ -6446,6 +6842,13 @@ function AnnouncementEditor({ item, onUpdate }) {
     setRows(next);
   };
   const removeRow = (i) => setRows(rows.filter((_, ri) => ri !== i));
+  const moveRow = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= rows.length) return;
+    const next = [...rows];
+    [next[i], next[j]] = [next[j], next[i]];
+    setRows(next);
+  };
 
   const inputStyle = {
     flex:1, padding:"4px 8px", fontSize:12,
@@ -6526,6 +6929,18 @@ function AnnouncementEditor({ item, onUpdate }) {
                   onChange={e => updateRow(i,"office",e.target.value)}
                   style={{...inputStyle,flex:"0 0 100px"}}/>
               )}
+              <div style={{display:"flex",flexDirection:"column",flexShrink:0}}>
+                <button onClick={()=>moveRow(i,-1)} disabled={i===0} title="Move up"
+                  style={{background:"none",border:"none",cursor:i===0?"default":"pointer",
+                    color:i===0?C.borderLight:C.textLight,padding:0,lineHeight:0,height:11}}>
+                  <ChevronUp size={11}/>
+                </button>
+                <button onClick={()=>moveRow(i,1)} disabled={i===rows.length-1} title="Move down"
+                  style={{background:"none",border:"none",cursor:i===rows.length-1?"default":"pointer",
+                    color:i===rows.length-1?C.borderLight:C.textLight,padding:0,lineHeight:0,height:11}}>
+                  <ChevronDown size={11}/>
+                </button>
+              </div>
               <button onClick={()=>removeRow(i)}
                 style={{background:"none",border:"none",cursor:"pointer",
                   color:C.textLight,flexShrink:0,padding:"2px 4px"}}>
@@ -6931,9 +7346,10 @@ function SacramentPrintView({ program, date, onClose, narrativeTemplates={}, cal
       }
       if (type === "Releasing") {
         const names = rows.map(r=>r.name).join("\n") || "—";
+        const namesCal = rows.map(r=>`${r.name}${r.calling?" — "+r.calling:""}`).join("\n") || "—";
         return `<div class="sp-item narr-block-row">
           <div class="sp-label">Releasing</div>
-          <div class="sp-value-col"><p class="narr-text narr-editable" contenteditable="true">${sub(T.releasing||"",{names})}</p></div>
+          <div class="sp-value-col"><p class="narr-text narr-editable" contenteditable="true">${sub(T.releasing||"",{names,names_callings:namesCal})}</p></div>
         </div>`;
       }
       if (type === "New Member") {
@@ -7217,6 +7633,8 @@ function ChurchIcon(){return<Building2 size={36}/>;}
 function ClipboardIcon(){return<ClipboardList size={36}/>;}
 function ChevLeftIcon(){return<ChevronLeft size={14}/>;}
 function ChevRightIcon(){return<ChevronRight size={14}/>;}
+function ChevUpIcon(){return<ChevronUp size={14}/>;}
+function ChevDownIcon(){return<ChevronDown size={14}/>;}
 function PullIcon(){return<RefreshCw size={11}/>;}
 function PushIcon(){return<Save size={11}/>;}
 

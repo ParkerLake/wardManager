@@ -79,18 +79,43 @@ async function clearAndWrite(sheetId, range, values) {
 
 function appointmentsToRows(data) {
   return [
-    ["Name", "Status", "Owner", "Purpose", "Appt Date", "Notes"],
-    ...data.map(a => [a.name, a.status, a.owner, a.purpose, a.apptDate, a.notes]),
+    ["Name", "Status", "Owner", "Purpose", "Appt Date", "Notes", "ID"],
+    ...data.map(a => [a.name, a.status, a.owner, a.purpose, a.apptDate, a.notes, a.id||""]),
   ];
 }
 
 function rowsToAppointments(rows) {
   if (!rows || rows.length < 2) return [];
   return rows.slice(1).map((r, i) => ({
-    id: `a_${(r[0]||"").replace(/\s+/g,"_").toLowerCase()}_${(r[3]||"").replace(/\s+/g,"_").toLowerCase()}_${(r[4]||"").replace(/\s+/g,"_").toLowerCase()}_${i}`,
+    // Prefer the persisted ID (column G). Falls back to the old synthesized id for
+    // legacy rows saved before this column existed — self-heals on the next save,
+    // since appointmentsToRows() always writes a.id back out to column G.
+    id: r[6] || `a_${(r[0]||"").replace(/\s+/g,"_").toLowerCase()}_${(r[3]||"").replace(/\s+/g,"_").toLowerCase()}_${(r[4]||"").replace(/\s+/g,"_").toLowerCase()}_${i}`,
     name: r[0]||"", status: r[1]||"Need to Schedule",
     owner: r[2]||"", purpose: r[3]||"", apptDate: r[4]||"", notes: r[5]||"",
   }));
+}
+
+function stagedSlotsToRows(data) {
+  return [
+    ["ID", "ApptId", "StagedDate", "StagedTime", "CreatedDate", "DurationMin"],
+    ...data.map(s => [s.id, s.apptId, s.stagedDate, timeTo12h(s.stagedTime||""), s.createdDate||"", s.durationMin||15]),
+  ];
+}
+
+function rowsToStagedSlots(rows) {
+  if (!rows || rows.length < 2) return [];
+  return rows.slice(1)
+    .filter(r => r[0] || r[1])
+    .map((r, i) => ({
+      id: r[0] || `stg_${i}`,
+      apptId: r[1]||"",
+      stagedDate: r[2]||"",
+      stagedTime: timeTo24h(r[3]||""), // normalize to HH:MM for sorting/matching
+      createdDate: r[4]||"",
+      // Legacy rows saved before duration existed default to one 15-min slot.
+      durationMin: parseInt(r[5],10) || 15,
+    }));
 }
 
 function callingsToRows(data) {
@@ -189,14 +214,17 @@ function rowsToLinks(rows) {
 // ── Pull functions ────────────────────────────────────────────────────────────
 
 export async function pullAll() {
-  const [appts, callings, releasings, members, meeting] = await Promise.all([
-    bishopricReq("Appointments!A:F").then(r => rowsToAppointments(r.values)),
+  const [appts, callings, releasings, members, meeting, staged] = await Promise.all([
+    bishopricReq("Appointments!A:G").then(r => rowsToAppointments(r.values)),
     bishopricReq("Callings!A:H").then(r => rowsToCallings(r.values)),
     bishopricReq("Releasings!A:H").then(r => rowsToCallings(r.values)),
     bishopricReq("Notes!A:E").then(r => rowsToNotes(r.values)),
     bishopricReq("BishopricMeeting!A:H").then(r => rowsToMeeting(r.values)),
+    // StagedSlots is a newer tab — tolerate it not existing yet so pullAll doesn't
+    // fail wholesale for wards that haven't created it in their sheet.
+    bishopricReq("StagedSlots!A:F").then(r => rowsToStagedSlots(r.values)).catch(() => []),
   ]);
-  return { appointments: appts, callings, releasings, members, bishopricMeeting: meeting };
+  return { appointments: appts, callings, releasings, members, bishopricMeeting: meeting, stagedSlots: staged };
 }
 
 export async function pullSacramentProgram() {
@@ -243,25 +271,34 @@ export async function pullWardCouncilLinks() {
 }
 
 export async function sheetsLightPull() {
-  const [appts, callings, releasings] = await Promise.all([
-    bishopricReq("Appointments!A:F").then(r => rowsToAppointments(r.values)),
+  const [appts, callings, releasings, staged] = await Promise.all([
+    bishopricReq("Appointments!A:G").then(r => rowsToAppointments(r.values)),
     bishopricReq("Callings!A:H").then(r => rowsToCallings(r.values)),
     bishopricReq("Releasings!A:H").then(r => rowsToCallings(r.values)),
+    bishopricReq("StagedSlots!A:F").then(r => rowsToStagedSlots(r.values)).catch(() => []),
   ]);
-  return { appointments: appts, callings, releasings };
+  return { appointments: appts, callings, releasings, stagedSlots: staged };
 }
 
 // ── Push functions ────────────────────────────────────────────────────────────
 
-export async function pushAll({ appointments, callings, releasings, members }) {
+export async function pushAll({ appointments, callings, releasings, members, stagedSlots }) {
   const sid = SID();
   const ops = [
-    clearAndWrite(sid, "Appointments!A:F", appointmentsToRows(appointments)),
+    clearAndWrite(sid, "Appointments!A:G", appointmentsToRows(appointments)),
     clearAndWrite(sid, "Callings!A:H",     callingsToRows(callings)),
     clearAndWrite(sid, "Releasings!A:H",   callingsToRows(releasings)),
   ];
   if (members !== undefined) {
     ops.push(clearAndWrite(sid, "Notes!A:E", notesToRows(members)));
+  }
+  if (stagedSlots !== undefined) {
+    // Same tolerance as pullAll — don't let a missing StagedSlots tab block saving
+    // Appointments/Callings/Releasings for wards that haven't created it yet.
+    ops.push(
+      clearAndWrite(sid, "StagedSlots!A:F", stagedSlotsToRows(stagedSlots))
+        .catch(e => console.error("StagedSlots save failed (has the tab been created?):", e))
+    );
   }
   await Promise.all(ops);
 }
