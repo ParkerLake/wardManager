@@ -34,7 +34,14 @@ Use `$A1` in place of `$A$1` in all four formulas before you copy the block down
 ## 3. New week
 Copy the last block, paste it directly below, change the date. Delete finished items, keep the rest (that is the carry-over).
 
-## 4. One-time import of existing topics (optional)
+## 3b. Topics added in the app before the block exists
+Safe to do. Those topics stay in `WardCouncilMeeting`. Once the date has a block, the app shows the block's items plus
+those topics (no duplicates). On the first save of the **latest** block they are added to the sheet and their old rows are
+renamed `adopted_topic_...` (not deleted). For older blocks they are shown but not moved.
+To roll back after adoption: in `WardCouncilMeeting`, Find & replace in column B `adopted_topic_` with `topic_`, then set the switch to `"app"`.
+
+## 4. Import of existing topics (no longer required)
+The app now merges older topics automatically (3b). The script below is only for a manual one-time copy.
 Apps Script (Extensions > Apps Script), run `importTopics` once with the latest block already created and its date a real date:
 
 ```js

@@ -10,7 +10,7 @@ import { Plus, X, ChevronUp, ChevronDown, LayoutList, Columns2, GripVertical, Pr
   ArrowDown, ArrowUp, LogOut, Menu, Home,
   Users, ClipboardCheck, Link2 } from "lucide-react";
 import { useAuth } from "./useAuth";
-import { pullAll, pushAll, pullSacrament, pushSacrament, testConnection } from "./sheets";
+import { pullAll, pushAll, pullSacrament, pushSacrament, testConnection, dedupeMeetingRows } from "./sheets";
 import config from "./config";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -349,6 +349,17 @@ function ModalFooter({ onClose, onSave, saveLabel="Save", saving }) {
 // ─── Slack Preview Modal ─────────────────────────────────────────────────────
 // Used by all three Slack send flows: Bishopric, Ward Council, Alerts.
 // Shows editable first line + full message preview before sending.
+// Slack link syntax <url|label> -> clickable label in the preview
+function renderSlackLinks(text) {
+  const parts = String(text).split(/(<https?:\/\/[^|>]+\|[^>]+>)/g);
+  return parts.map((part, i) => {
+    const m = part.match(/^<(https?:\/\/[^|>]+)\|([^>]+)>$/);
+    return m
+      ? <a key={i} href={m[1]} target="_blank" rel="noopener noreferrer" style={{color:C.blue35,textDecoration:"underline"}}>{m[2]}</a>
+      : part;
+  });
+}
+
 function SlackPreviewModal({ firstLine, setFirstLine, agendaLines, assignmentLines, mode, onModeChange, channelName, sending, onConfirm, onClose }) {
   const bodyLines = mode === "agenda" ? (agendaLines||[]) : (assignmentLines||[]);
   const previewText = [firstLine, ...bodyLines].join("\n");
@@ -380,7 +391,7 @@ function SlackPreviewModal({ firstLine, setFirstLine, agendaLines, assignmentLin
         {isDone   && <span style={{color:"#2e7d32",flexShrink:0,fontSize:12}}>✓</span>}
         {isPending && <span style={{color:C.textMuted,flexShrink:0,fontSize:12}}>—</span>}
         <span style={{textDecoration:isDone?"line-through":"none"}}>
-          {isDone ? trimmed.slice(2) : isPending ? trimmed.slice(2) : trimmed}
+          {renderSlackLinks(isDone ? trimmed.slice(2) : isPending ? trimmed.slice(2) : trimmed)}
         </span>
       </div>
     );
@@ -2974,12 +2985,13 @@ function useMeetingSync({ getData, saveFn, pullFn, diffFn, onApply, enabled = tr
     if (dirty.size > 0 || timeSinceEdit < 60000) {
       // Has local unsaved changes — merge safely:
       // Keep all local rows, only add remote rows that don't exist locally
+      // Rows are matched by date|itemKey, NOT by id: ids differ between locally-created rows and
+      // freshly-pulled ones (and used to be row positions), so an id match re-added every row
+      // we already had — that was the duplicate-tasks bug.
       const local = getData();
-      const localIds = new Set(local.map(r => r.id || `${r.date}|${r.itemKey}`));
-      const remoteOnlyRows = pendingData.filter(r => {
-        const key = r.id || `${r.date}|${r.itemKey}`;
-        return !localIds.has(key);
-      });
+      const rowKey = r => r.itemKey !== undefined ? `${r.date}|${r.itemKey}` : (r.id || `${r.date}|${r.itemKey}`);
+      const localIds = new Set(local.map(rowKey));
+      const remoteOnlyRows = pendingData.filter(r => !localIds.has(rowKey(r)));
       // Only append genuinely new remote rows — never replace local ones
       if (remoteOnlyRows.length > 0) {
         onApply([...local, ...remoteOnlyRows]);
@@ -3053,6 +3065,9 @@ function MeetingSyncBar({ saveStatus, pendingCount, onApply, onSave }) {
 }
 
 // ─── Bishopric Council Tab ────────────────────────────────────────────────────
+
+// Stable id for a meeting row: one row per date + itemKey.
+const meetingRowId = (date, itemKey) => `${date}|${itemKey}`;
 
 // Get ISO week number from a date string YYYY-MM-DD
 function isoWeek(dateStr) {
@@ -3282,7 +3297,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   const [prayerListData, setPrayerListData] = useState(null);
   const [prayerListLoading, setPrayerListLoading] = useState(false);
   // Keep local bmData in sync with parent (on initial pull)
-  useEffect(() => { setBmData(bishopricMeeting); }, [bishopricMeeting]);
+  useEffect(() => { setBmData(dedupeMeetingRows(bishopricMeeting)); }, [bishopricMeeting]);
 
   // Pause auto-pull while on this tab (same pattern as Sacrament)
   // (handled in parent via tabRef)
@@ -3292,7 +3307,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   const isEvenWeek = week % 2 === 0;
 
   // Items for this date from sheet data
-  const dateItems = bmData.filter(r => r.date === selectedDate);
+  const dateItems = dedupeMeetingRows(bmData.filter(r => r.date === selectedDate));
   const hasData   = dateItems.length > 0;
 
   // ── Rotation helper — balanced auto-assignment across bishopric ──
@@ -3420,6 +3435,27 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
     return isEvenWeek ? "handbook_review" : "spiritual_thought";
   })();
 
+  // ── Handbook section tracker ──
+  // On handbook weeks we record which Handbook section was covered, in a per-date row
+  // (itemKey "handbook_section", section number in `notes`). The next handbook week
+  // suggests last-recorded + 1. Weeks that were switched back to Spiritual Thought are ignored.
+  const spiritLabelFor = (date) => {
+    const o = bmData.find(r => r.date === date && r.itemKey === "spirit_thought")?.spiritToggle;
+    return o || (isoWeek(date) % 2 === 0 ? "handbook_review" : "spiritual_thought");
+  };
+  const parseSection = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : null; };
+  const isHandbookWeek = spiritLabel === "handbook_review";
+  const lastHandbookRow = bmData
+    .filter(r => r.itemKey === "handbook_section" && r.date < selectedDate && parseSection(r.notes) && spiritLabelFor(r.date) === "handbook_review")
+    .sort((a, b) => (a.date < b.date ? 1 : -1))[0] || null;
+  const lastHandbookSection = lastHandbookRow ? parseSection(lastHandbookRow.notes) : null;
+  const savedHandbookSection = parseSection(getItem("handbook_section")?.notes);
+  const handbookSection = savedHandbookSection || (lastHandbookSection ? lastHandbookSection + 1 : 1);
+  const setHandbookSection = (n) => {
+    updateItem("handbook_section", "notes", String(Math.max(1, n)));
+    setTimeout(() => doSave(), 100);
+  };
+
   // Open prayer list modal — fetch from separate sheet
   const openPrayerList = async (force=false) => {
     setShowPrayerList(true);
@@ -3447,7 +3483,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   // and incomplete tasks from the most recent prior week.
   const createProgram = () => {
     const rows = BM_TEMPLATE.map(t => ({
-      id: `bm_new_${t.itemKey}`,
+      id: meetingRowId(selectedDate, t.itemKey),
       date: selectedDate,
       itemKey: t.itemKey,
       assignee: "",
@@ -3471,7 +3507,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
             !r.done &&
             (r.itemKey.startsWith("topic_") || r.itemKey.startsWith("task_"))
           )
-          .map(r => ({ ...r, date: selectedDate, id: `bm_carried_${r.itemKey}` }))
+          .map(r => ({ ...r, date: selectedDate, id: meetingRowId(selectedDate, r.itemKey) }))
       : [];
 
     const newData = [...bmData.filter(r => r.date !== selectedDate), ...rows, ...carried];
@@ -3507,7 +3543,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
       if (exists) {
         next = prev.map(r => r.date === selectedDate && r.itemKey === itemKey ? { ...r, [field]: value } : r);
       } else {
-        next = [...prev, { id: `bm_${itemKey}_${Date.now()}`, date: selectedDate, itemKey, assignee: "", done: false, notes: "", customLabel: "", spiritToggle: "", [field]: value }];
+        next = [...prev, { id: meetingRowId(selectedDate, itemKey), date: selectedDate, itemKey, assignee: "", done: false, notes: "", customLabel: "", spiritToggle: "", [field]: value }];
       }
       setBishopricMeeting(next);
       bmDataRef.current = next; // sync ref immediately so doSave gets fresh data
@@ -3530,7 +3566,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
     const id = `topic_${Date.now()}`;
     const maxOrder = discussionTopics.length > 0
       ? Math.max(...discussionTopics.map(t => t.topicOrder ?? 0)) : -1;
-    const newRow = { id: `bm_${id}`, date: selectedDate, itemKey: id, assignee: "", done: false, notes: text.trim(), customLabel: "", spiritToggle: "", topicOrder: maxOrder + 1 };
+    const newRow = { id: meetingRowId(selectedDate, id), date: selectedDate, itemKey: id, assignee: "", done: false, notes: text.trim(), customLabel: "", spiritToggle: "", topicOrder: maxOrder + 1 };
     const newData = [...bmData, newRow];
     setBmData(newData); setBishopricMeeting(newData);
     bmMarkDirty(`${selectedDate}|${id}`);
@@ -3567,7 +3603,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
   const addTask = (text, assignee) => {
     if (!text.trim()) return;
     const id = `task_${Date.now()}`;
-    const newRow = { id: `bm_${id}`, date: selectedDate, itemKey: id, assignee: assignee || "", done: false, notes: text.trim(), customLabel: "", spiritToggle: "" };
+    const newRow = { id: meetingRowId(selectedDate, id), date: selectedDate, itemKey: id, assignee: assignee || "", done: false, notes: text.trim(), customLabel: "", spiritToggle: "" };
     const newData = [...bmData, newRow];
     setBmData(newData); setBishopricMeeting(newData);
     bmMarkDirty(`${selectedDate}|${id}`);
@@ -3664,7 +3700,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
       !currentKeys.has(r.itemKey)
     );
     if (toCarry.length === 0) return;
-    const carried = toCarry.map(r => ({ ...r, date: selectedDate, id: `bm_carried_${r.itemKey}` }));
+    const carried = toCarry.map(r => ({ ...r, date: selectedDate, id: meetingRowId(selectedDate, r.itemKey) }));
     const newData = [...data, ...carried];
     setBmData(newData);
     setBishopricMeeting(newData);
@@ -3685,7 +3721,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
     const speakers  = sacrItems.filter(s => s.section === "Speaker").map(s => s.value).filter(Boolean);
     const organist  = sacrItems.find(s => s.label === "Organist")?.value || "—";
     const chorister = sacrItems.find(s => s.label === "Chorister")?.value || "—";
-    const sLabel = spiritLabel === "handbook_review" ? "Handbook Review" : "Spiritual Thought";
+    const sLabel = spiritLabel === "handbook_review" ? `Handbook Review (Section ${handbookSection})` : "Spiritual Thought";
     const songRow = getItem("opening_song");
     const songNum = songRow?.notes || "";
     const songTitle = songRow?.customLabel || "";
@@ -3843,7 +3879,7 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
             style={{ width: 160, padding: "6px 10px", fontSize: 12 }}/>
         )}
         <div style={{ fontSize: 11, color: C.textMuted, fontFamily: "'Helvetica Neue',Arial,sans-serif", marginLeft: 6 }}>
-          Week {week} · {spiritLabel === "handbook_review" ? "Handbook Review week" : "Spiritual Thought week"}
+          Week {week} · {spiritLabel === "handbook_review" ? `Handbook Review week · Section ${handbookSection}` : "Spiritual Thought week"}
         </div>
       </div>
 
@@ -3883,7 +3919,12 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
                 return (
                   <div key={tmpl.itemKey} style={{ padding: "14px 20px", borderBottom: isLast ? "none" : `1px solid ${C.borderLight}`, display: "flex", alignItems: "flex-start", gap: 16 }}>
                     {/* Done checkbox */}
-                    <button onClick={() => { updateItem(tmpl.itemKey, "done", !(row?.done)); setTimeout(() => doSave(), 100); }}
+                    <button onClick={() => {
+                      updateItem(tmpl.itemKey, "done", !(row?.done));
+                      // Checking off Handbook Review locks in the section so next time starts one higher
+                      if (tmpl.alternates && isHandbookWeek && !row?.done && !savedHandbookSection) updateItem("handbook_section", "notes", String(handbookSection));
+                      setTimeout(() => doSave(), 100);
+                    }}
                       style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${row?.done ? C.green25 : C.border}`, background: row?.done ? C.green25 : "transparent", cursor: "pointer", flexShrink: 0, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "center" }}>
                       {row?.done && <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5L4 7.5L8.5 2.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                     </button>
@@ -3951,6 +3992,23 @@ function BishopricCouncilTab({ bishopricMeeting, setBishopricMeeting, callings, 
                             ⇄ Switch
                           </button>
                         )}
+
+                        {/* Handbook section — compact inline control (Handbook Review weeks only) */}
+                        {tmpl.alternates && isHandbookWeek && (() => {
+                          const tiny = { width: 18, height: 18, borderRadius: 4, border: `1px solid ${C.border}`, background: C.surfaceWarm, color: C.textSecond, cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0, display: "inline-flex", alignItems: "center", justifyContent: "center" };
+                          const tip = (lastHandbookSection ? `Last covered: Section ${lastHandbookSection} (${toDisplayDate(lastHandbookRow.date)}).` : "No earlier section recorded.")
+                            + (savedHandbookSection ? ` Saved — next handbook week starts at Section ${handbookSection + 1}.` : " Not saved yet — click ✓ to confirm.");
+                          return (
+                            <span title={tip} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "'Helvetica Neue',Arial,sans-serif" }}>
+                              <button onClick={() => setHandbookSection(handbookSection - 1)} disabled={handbookSection <= 1} style={{ ...tiny, opacity: handbookSection <= 1 ? .35 : 1 }}>−</button>
+                              <span style={{ fontSize: 12, fontWeight: 700, minWidth: 54, textAlign: "center", color: savedHandbookSection ? C.blue35 : C.gold20, fontStyle: savedHandbookSection ? "normal" : "italic" }}>Section {handbookSection}</span>
+                              <button onClick={() => setHandbookSection(handbookSection + 1)} style={tiny}>+</button>
+                              {!savedHandbookSection && (
+                                <button onClick={() => setHandbookSection(handbookSection)} style={{ ...tiny, borderColor: C.green25, color: C.green35, background: "#EAF4EA" }}>✓</button>
+                              )}
+                            </span>
+                          );
+                        })()}
                       </div>
 
                       {/* Prayer List button */}
@@ -5208,8 +5266,14 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
 
     const divider = "─────────────────────────────";
 
+    // Link to the Ward Council Google Sheet (Slack renders <url|label> as a clickable label)
+    const sheetUrl = config.WARD_COUNCIL_SHEET_URL || "";
+    const linkLines = sheetUrl && !sheetUrl.includes("YOUR_")
+      ? ["", `📄 View the agenda or add items: <${sheetUrl}|Ward Council Agenda (Google Sheet)>`]
+      : [];
+
     // Full agenda body
-    const agendaLines = buildWCAgendaLines(wcData, selectedDate, spiritLabel, getItem, sLabel, divider);
+    const agendaLines = [...buildWCAgendaLines(wcData, selectedDate, spiritLabel, getItem, sLabel, divider), ...linkLines];
     // Assignments only body
     const assignmentLines = [
       divider,
@@ -5218,6 +5282,7 @@ function WardCouncilTab({ wardCouncilMeeting, setWardCouncilMeeting, calendar=[]
         ? assignments.map(a => `  ${a}`)
         : ["  No assignments set"]),
       divider,
+      ...linkLines,
     ];
 
     setSlackDraft({ firstLine: `Ward Council — ${toDisplayDate(selectedDate)}`, agendaLines, assignmentLines, relayURL, channelKey: webhookURL, channelName, mode: "assignments" });

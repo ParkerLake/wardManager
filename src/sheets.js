@@ -163,16 +163,37 @@ function rowsToNotes(rows) {
 const membersToRows = notesToRows;
 const rowsToMembers = rowsToNotes;
 
+// A meeting row's identity is date + itemKey (that is how every lookup, merge and React key works).
+// If the same pair ever shows up twice (earlier builds could write duplicates), collapse to one row,
+// keeping the first position and treating the item as done if either copy was checked off.
+// Returns the same array untouched when there is nothing to collapse.
+export function dedupeMeetingRows(rows) {
+  const firstAt = new Map();
+  const out = [];
+  let changed = false;
+  rows.forEach(r => {
+    if (!r || !r.itemKey) { out.push(r); return; }
+    const k = `${r.date}|${r.itemKey}`;
+    if (!firstAt.has(k)) { firstAt.set(k, out.length); out.push(r); return; }
+    changed = true;
+    const i = firstAt.get(k);
+    if (r.done && !out[i].done) out[i] = { ...out[i], done: true };
+  });
+  return changed ? out : rows;
+}
+
 function rowsToMeeting(rows) {
   if (!rows || rows.length < 2) return [];
   const header = rows[0];
   // Detect old format (Topic|Owner|Status|Notes) vs new (Date|ItemKey|...)
   const isNewFormat = header[0] === "Date" && header[1] === "ItemKey";
   if (isNewFormat) {
-    return rows.slice(1)
+    return dedupeMeetingRows(rows.slice(1)
       .filter(r => r[0] || r[1]) // must have date or itemKey
       .map((r, i) => ({
-        id: `mt_${i}`,
+        // Stable id: used to be `mt_${i}` (row position), which changes every time the sheet is
+        // rewritten and made id-based merges treat the same row as a new one.
+        id: `${r[0]||""}|${r[1]||""}`,
         date: r[0]||"",
         itemKey: r[1]||"",
         assignee: r[2]||"",
@@ -181,13 +202,14 @@ function rowsToMeeting(rows) {
         customLabel: r[5]||"",
         spiritToggle: r[6]||"",
         topicOrder: r[7] !== undefined && r[7] !== "" ? parseInt(r[7]) : undefined,
-      }));
+      })));
   }
   // Legacy format — return empty so app creates fresh agenda
   return [];
 }
 
 function meetingToRows(data) {
+  data = dedupeMeetingRows(data);
   const rows = [
     ["Date", "ItemKey", "Assignee", "Done", "Notes", "CustomLabel", "SpiritToggle", "TopicOrder"],
     ...data.map(r => [
@@ -373,13 +395,27 @@ function mergeTopics(base, local, current) {
       return l && b && l.done !== b.done ? { ...t, done: l.done } : t;
     });
   const have = new Set(result.map(t => t.text));
-  local.forEach(t => { if (!have.has(t.text)) { result.push(t); have.add(t.text); } });
+  // Only items this user added (not in base). Items in base that are missing from the
+  // sheet were removed by someone else, so they must not come back.
+  local.forEach(t => { if (!baseMap.has(t.text) && !have.has(t.text)) { result.push(t); have.add(t.text); } });
   return result;
 }
 
-async function writeAgendaTopics(block, baseTopics, localTopics) {
-  const merged = mergeTopics(baseTopics, localTopics, block.topics);
-  if (JSON.stringify(merged) === JSON.stringify(block.topics)) return; // nothing to change
+// Legacy topics saved in WardCouncilMeeting for a date that now has a block are shown together
+// with the block's items. On the first save of the latest block they are adopted into the sheet.
+const norm = t => String(t || "").trim().toLowerCase();
+const legacyTopicRows = (rows, date) => rows
+  .filter(r => r.date === date && isTopicRow(r) && !r.itemKey.startsWith("topic_sheet_"))
+  .sort((a, b) => (a.topicOrder ?? 0) - (b.topicOrder ?? 0));
+
+async function writeAgendaTopics(block, baseTopics, localTopics, legacyTopics = []) {
+  let current = block.topics;
+  if (block.isLatest && legacyTopics.length) {
+    const have = new Set(current.map(t => norm(t.text)));
+    current = [...current, ...legacyTopics.filter(t => !have.has(norm(t.text)))];
+  }
+  const merged = mergeTopics(baseTopics, localTopics, current);
+  if (JSON.stringify(merged) === JSON.stringify(block.topics)) return; // sheet already up to date
   if (!block.isLatest) {
     throw new Error("Only the latest week's agenda items can be edited from the app. Edit older weeks in the sheet.");
   }
@@ -398,7 +434,17 @@ export async function pullWardCouncilMeeting() {
   if (blocks) {
     // Dates that have a block in the Agenda tab take their topics from the sheet.
     agendaDates = new Set(blocks.map(b => b.date));
-    rows = rows.filter(x => !(agendaDates.has(x.date) && isTopicRow(x))).concat(agendaToMeetingRows(blocks));
+    // Sheet topics first, then any older WardCouncilMeeting topics for that date not already in the block.
+    const legacyKept = [];
+    blocks.forEach(b => {
+      const have = new Set(b.topics.map(t => norm(t.text)));
+      legacyTopicRows(rows, b.date).forEach(r => {
+        const k = norm(r.notes);
+        if (k && !have.has(k)) { have.add(k); legacyKept.push({ ...r, topicOrder: b.topics.length + (r.topicOrder ?? 0) }); }
+      });
+    });
+    rows = rows.filter(x => !(agendaDates.has(x.date) && isTopicRow(x)))
+               .concat(agendaToMeetingRows(blocks), legacyKept);
   } else {
     agendaDates = new Set();
   }
@@ -544,9 +590,16 @@ export async function pushBishopricMeeting(localDateRows, date, baseRows = [], l
 }
 
 export async function pushWardCouncilMeeting(localDateRows, date, baseRows = [], localAllRows = []) {
-  // Sheet-based topics: for dates that have a block in the Agenda tab, topics are
-  // written to that tab and kept OUT of WardCouncilMeeting (old rows are preserved).
+  let remoteAll = [];
+  try {
+    const r = await wcReq("WardCouncilMeeting!A:H");
+    remoteAll = rowsToMeeting(r.values);
+  } catch(_) {}
+
+  // Sheet-based topics: for dates that have a block in the Agenda tab, topics are written to
+  // that tab. Legacy topic rows for the date are adopted into the block (and renamed, never deleted).
   let dates = null;
+  let retireDate = null;
   if (agendaOn()) {
     const blocks = await readAgendaBlocks().catch(e => { console.error("Agenda tab read failed:", e); return null; });
     if (blocks) {
@@ -554,9 +607,14 @@ export async function pushWardCouncilMeeting(localDateRows, date, baseRows = [],
       agendaDates = dates;
       const block = blocks.find(b => b.date === date);
       if (block) {
-        const localTopics = localDateRows.filter(isTopicRow);
-        const baseTopics  = baseRows.filter(r => r.date === date && isTopicRow(r));
-        await writeAgendaTopics(block, rowsToTopics(baseTopics), rowsToTopics(localTopics));
+        const legacy = legacyTopicRows(remoteAll, date);
+        await writeAgendaTopics(
+          block,
+          rowsToTopics(baseRows.filter(r => r.date === date && isTopicRow(r))),
+          rowsToTopics(localDateRows.filter(isTopicRow)),
+          rowsToTopics(legacy),
+        );
+        if (block.isLatest && legacy.length) retireDate = date;
       }
       const strip = rows => rows.filter(r => !(dates.has(r.date) && isTopicRow(r)));
       localDateRows = strip(localDateRows);
@@ -564,23 +622,23 @@ export async function pushWardCouncilMeeting(localDateRows, date, baseRows = [],
       localAllRows  = strip(localAllRows);
     }
   }
-  let remoteAll = [];
-  try {
-    const r = await wcReq("WardCouncilMeeting!A:H");
-    remoteAll = rowsToMeeting(r.values);
-  } catch(_) {}
   const otherDates = mergeOtherDates(remoteAll, localAllRows, date);
   const remoteDate = remoteAll.filter(r => r.date === date);
   const mergedDate = baseRows.length > 0 && remoteDate.length > 0
     ? threewayMergeDate(localDateRows, remoteDate, baseRows)
     : localDateRows;
-  const finalRows = [...otherDates, ...mergedDate];
+  let finalRows = [...otherDates, ...mergedDate];
   if (dates) {
     // Keep the original topic rows for sheet-managed dates so rollback is lossless.
     const have = new Set(finalRows.map(r => `${r.date}|${r.itemKey}`));
     remoteAll.forEach(r => {
       if (dates.has(r.date) && isTopicRow(r) && !have.has(`${r.date}|${r.itemKey}`)) finalRows.push(r);
     });
+  }
+  if (retireDate) {
+    // Adopted into the Agenda tab: rename (not delete) so they stop showing twice.
+    finalRows = finalRows.map(r => r.date === retireDate && isTopicRow(r) && !r.itemKey.startsWith("topic_sheet_")
+      ? { ...r, itemKey: `adopted_${r.itemKey}` } : r);
   }
   await clearAndWrite(WCID(), "WardCouncilMeeting!A:H", meetingToRows(finalRows));
 }
